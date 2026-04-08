@@ -1,0 +1,17 @@
+{
+  "name": "prospect-bot",
+  "version": "1.0.0",
+  "description": "Automated B2B prospecting CLI for FastDevBuilds — finds, scores, and messages local businesses",
+  "type": "module",
+  "main": "prospect.js",
+  "scripts": {
+    "start": "node prospect.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "@supabase/supabase-js": "^2.49.4",
+    "cheerio": "^1.0.0",
+    "csv-writer": "^1.6.0",
+    "dotenv": "^16.4.7"
+  }
+}
