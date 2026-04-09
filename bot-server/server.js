@@ -2,8 +2,18 @@ import { createServer } from 'node:http'
 import { spawn } from 'node:child_process'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { existsSync } from 'node:fs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
+
+// Resolve prospect.js path — on Railway __dirname may differ from project root
+const prospectPath = existsSync(join(__dirname, '..', 'prospect.js'))
+  ? join(__dirname, '..', 'prospect.js')
+  : join(process.cwd(), 'prospect.js')
+
+console.log('[bot-server] prospect.js path:', prospectPath)
+console.log('[bot-server] __dirname:', __dirname)
+console.log('[bot-server] cwd:', process.cwd())
 const BOT_SECRET = process.env.BOT_SERVER_SECRET || ''
 const PORT = process.env.PORT || 3001
 
@@ -63,7 +73,7 @@ const server = createServer(async (req, res) => {
 
     // Build args
     const args = [
-      join(__dirname, '..', 'prospect.js'),
+      prospectPath,
       '--niche', niche,
       '--city', city,
       '--limit', String(limit),
