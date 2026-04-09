@@ -31,6 +31,15 @@ function scoreLead(lead) {
   if (!lead.has_ssl)            { reasons.push('no_ssl');             points += 2; }
   if (!lead.is_mobile_friendly) { reasons.push('no_mobile_viewport'); points += 1; }
 
+  // Visual analysis scoring
+  if (lead.visual_score !== null && lead.visual_score !== undefined) {
+    if (lead.visual_score < 4) {
+      reasons.push('outdated_design');      points += 2;
+    } else if (lead.visual_score <= 6) {
+      reasons.push('poor_visual_quality');  points += 1;
+    }
+  }
+
   return {
     ...lead,
     pain_score:    Math.min(points, 10),

@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import csvWriterPkg from 'csv-writer';
 import { collect }          from './steps/collect.js';
 import { analyze }          from './steps/analyze.js';
+import { visualAnalysis }   from './steps/visual.js';
 import { score }            from './steps/score.js';
 import { generateMessages } from './steps/message.js';
 import { upsertLeads, getClient }                  from './lib/supabase.js';
@@ -143,6 +144,8 @@ function sanitizeLead(lead) {
     has_booking:        bool(lead.has_booking),
     tech_stack:         str(lead.tech_stack),
     scrape_failed:      bool(lead.scrape_failed),
+    visual_score:       num(lead.visual_score),
+    visual_notes:       reasons(lead.visual_notes),
     pain_score:         num(lead.pain_score),
     score_reasons:      reasons(lead.score_reasons),
     message:            str(lead.message),
@@ -181,6 +184,8 @@ async function exportCsv(leads, filePath) {
       { id: 'has_booking',        title: 'has_booking' },
       { id: 'tech_stack',         title: 'tech_stack' },
       { id: 'scrape_failed',      title: 'scrape_failed' },
+      { id: 'visual_score',       title: 'visual_score' },
+      { id: 'visual_notes',       title: 'visual_notes' },
       { id: 'pain_score',         title: 'pain_score' },
       { id: 'score_reasons',      title: 'score_reasons' },
       { id: 'message',            title: 'message' },
@@ -262,6 +267,21 @@ async function main() {
 
   const analyzedCount = leads.filter((l) => !l.scrape_failed).length;
   console.log(`    Analyzed: ${analyzedCount}/${leads.length}  (${leads.length - analyzedCount} failed)`);
+
+  // 2.5. Visual analysis
+  if (!dry && process.env.ANTHROPIC_API_KEY) {
+    console.log(`\n👁️   Running visual analysis on ${leads.length} websites...`);
+    try {
+      leads = await visualAnalysis(leads);
+      const visualized = leads.filter((l) => l.visual_score !== null).length;
+      console.log(`    Visual: ${visualized}/${leads.length} sites analyzed`);
+    } catch (err) {
+      console.warn(`⚠️   Visual analysis failed (continuing without it): ${err.message}`);
+      leads = leads.map((l) => ({ ...l, visual_score: null, visual_notes: [] }));
+    }
+  } else {
+    leads = leads.map((l) => ({ ...l, visual_score: null, visual_notes: [] }));
+  }
 
   // 3. Score
   console.log('\n🎯  Scoring leads...');
