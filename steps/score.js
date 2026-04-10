@@ -26,18 +26,18 @@ function scoreLead(lead) {
     if (lead.visual_score < 4) {
       reasons.push('outdated_design');      points += 3;
     } else if (lead.visual_score <= 6) {
-      reasons.push('poor_visual_quality');  points += 2;
+      reasons.push('poor_visual_quality');  points += 3;
     }
   }
 
   // ── Conversion essentials ──
   if (!lead.has_form)           { reasons.push('no_form');            points += 2; }
-  if (!lead.has_booking)        { reasons.push('no_booking');         points += 2; }
+  if (!lead.has_booking)        { reasons.push('no_booking');         points += 1; }
   if (!lead.has_whatsapp)       { reasons.push('no_whatsapp');        points += 1; }
 
   // ── Technical ──
   if (OUTDATED_BUILDERS.has(lead.tech_stack)) {
-                                  reasons.push('outdated_builder');   points += 2; }
+                                  reasons.push('outdated_builder');   points += 1; }
   if (!lead.has_ssl)            { reasons.push('no_ssl');             points += 2; }
   if (!lead.is_mobile_friendly) { reasons.push('no_mobile_viewport'); points += 1; }
 
