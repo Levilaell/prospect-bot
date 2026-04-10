@@ -56,15 +56,15 @@ const server = createServer(async (req, res) => {
     }
 
     const body = await parseBody(req)
-    const {
-      niche, city,
-      limit = '20',
-      minScore = '4',
-      lang = 'en',
-      exportTarget = 'csv',
-      dryRun = false,
-      send = false,
-    } = body
+    // Accept both camelCase and snake_case (dashboard sends snake_case)
+    const niche       = body.niche
+    const city        = body.city
+    const limit       = body.limit ?? body.limit_count ?? '20'
+    const minScore    = body.min_score ?? body.minScore ?? '4'
+    const lang        = body.lang ?? 'pt'
+    const exportTarget = body.export_target ?? body.exportTarget ?? 'both'
+    const dryRun      = body.dry_run ?? body.dryRun ?? false
+    const send        = body.send ?? false
 
     if (!niche || !city) {
       res.writeHead(400)
