@@ -34,7 +34,7 @@ try {
       send:          { type: 'boolean', default: false },
     },
     strict: true,
-    allowPositionals: false,
+    allowPositionals: true,
   }));
 } catch (err) {
   console.error(`❌  Invalid arguments: ${err.message}`);
@@ -155,6 +155,9 @@ function sanitizeLead(lead) {
     outreach_channel:   str(lead.outreach_channel),
     email:              str(lead.email),
     email_source:       str(lead.email_source),
+    niche:              str(lead.niche),
+    status:             str(lead.status),
+    status_updated_at:  str(lead.status_updated_at),
   };
 }
 
@@ -350,11 +353,7 @@ async function main() {
   }
 
   if (exportTarget === 'supabase' || exportTarget === 'both') {
-    try {
-      await upsertLeads(withMessages);
-    } catch (err) {
-      console.warn(`⚠️   Supabase export failed (CSV is your fallback): ${err.message}`);
-    }
+    await upsertLeads(withMessages);
   }
 
   // 6. Dispatch outreach

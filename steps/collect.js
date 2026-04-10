@@ -118,6 +118,8 @@ export async function collect({ niche, city, limit }) {
       website:       p.website,
       rating:        p.rating,
       review_count:  p.review_count,
+      status:        'prospected',
+      status_updated_at: collected_at,
       collected_at,
     }));
 
