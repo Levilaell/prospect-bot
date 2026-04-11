@@ -93,16 +93,31 @@ async function processItem(item, { minScore, dry, send, limit }) {
   }
 
   const qualified = leads.filter((l) => (l.pain_score ?? 0) >= minScore);
+  const disqualified = leads.filter((l) => (l.pain_score ?? 0) < minScore);
   console.log(`🎯  ${tag} Qualified: ${qualified.length}/${leads.length} (score >= ${minScore})`);
 
+  // Save disqualified leads with minimal data — just enough for dedup, invisible in dashboard
+  if (disqualified.length > 0) {
+    const minimal = disqualified.map(l => ({
+      place_id: l.place_id,
+      niche: l.niche,
+      search_city: l.search_city,
+      city: l.city,
+      business_name: l.business_name,
+      pain_score: l.pain_score,
+      status: 'disqualified',
+      status_updated_at: new Date().toISOString(),
+    }));
+    await upsertLeads(minimal);
+    console.log(`    ${tag} Saved ${minimal.length} disqualified leads (minimal, dedup only).`);
+  }
+
   if (dry) {
-    // In dry mode, still upsert to Supabase so the queue tracks what was collected
-    await upsertLeads(leads);
+    if (qualified.length > 0) await upsertLeads(qualified);
     return { collected: leads.length, qualified: qualified.length, sent: 0 };
   }
 
   if (qualified.length === 0) {
-    await upsertLeads(leads);
     return { collected: leads.length, qualified: 0, sent: 0 };
   }
 
@@ -115,11 +130,8 @@ async function processItem(item, { minScore, dry, send, limit }) {
     console.warn(`⚠️  ${tag} message generation failed: ${err.message}`);
   }
 
-  // 5. Export to Supabase (always in auto mode)
-  await upsertLeads([
-    ...leads.filter((l) => (l.pain_score ?? 0) < minScore),
-    ...withMessages,
-  ]);
+  // 5. Export qualified to Supabase (full data)
+  await upsertLeads(withMessages);
 
   // 6. Send outreach (if --send)
   let sentCount = 0;
