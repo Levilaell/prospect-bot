@@ -65,6 +65,43 @@ async function processItem(item, { minScore, dry, send, limit }) {
     return { collected: 0, qualified: 0, sent: 0 };
   }
 
+  // 1.6. Phone filter (BR only) — disqualify leads without valid WhatsApp number
+  if (lang === 'pt') {
+    const validWA = [];
+    const noPhone = [];
+    for (const lead of leads) {
+      const digits = (lead.phone || '').replace(/\D/g, '');
+      const normalized = digits.startsWith('55') ? digits
+        : digits.startsWith('0') ? '55' + digits.slice(1)
+        : '55' + digits;
+      if (normalized.match(/^55\d{2}9\d{8}$/)) {
+        validWA.push(lead);
+      } else {
+        noPhone.push(lead);
+      }
+    }
+    if (noPhone.length > 0) {
+      const minimal = noPhone.map(l => ({
+        place_id: l.place_id,
+        niche: l.niche,
+        search_city: l.search_city,
+        city: l.city,
+        business_name: l.business_name,
+        phone: l.phone || null,
+        pain_score: 0,
+        status: 'disqualified',
+        status_updated_at: new Date().toISOString(),
+      }));
+      await upsertLeads(minimal);
+      console.log(`    ${tag} Disqualified ${noPhone.length} leads without valid WhatsApp number.`);
+    }
+    leads = validWA;
+    if (leads.length === 0) {
+      console.log(`    ${tag} No leads with valid WhatsApp — skipping analysis.`);
+      return { collected: noPhone.length, qualified: 0, sent: 0 };
+    }
+  }
+
   // 2. Analyze
   console.log(`⚡  ${tag} Analyzing ${leads.length} websites...`);
   try {
