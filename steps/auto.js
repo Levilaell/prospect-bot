@@ -158,6 +158,24 @@ async function processItem(item, { minScore, dry, send, limit }) {
     }
   }
 
+  // 7. Update status to 'sent' for leads that were actually sent
+  if (sentCount > 0) {
+    try {
+      const client = getClient();
+      const sentIds = withMessages
+        .filter(l => l.outreach_sent === true)
+        .map(l => l.place_id);
+      if (sentIds.length > 0) {
+        await client.from('leads')
+          .update({ status: 'sent', status_updated_at: new Date().toISOString() })
+          .in('place_id', sentIds)
+          .eq('status', 'prospected');
+      }
+    } catch (err) {
+      console.warn(`⚠️  ${tag} status update to 'sent' failed: ${err.message}`);
+    }
+  }
+
   return { collected: leads.length, qualified: qualified.length, sent: sentCount };
 }
 
