@@ -286,6 +286,35 @@ async function main() {
   }
   console.log(`    Found ${leads.length} businesses with usable websites.`);
 
+  // 1.5. Dedup — skip leads already in Supabase (saves API calls)
+  if (exportTarget === 'supabase' || exportTarget === 'both') {
+    try {
+      const placeIds = leads.map(l => l.place_id);
+      const client = getClient();
+      const { data: existing } = await client
+        .from('leads')
+        .select('place_id')
+        .in('place_id', placeIds);
+
+      if (existing && existing.length > 0) {
+        const existingSet = new Set(existing.map(r => r.place_id));
+        const before = leads.length;
+        leads = leads.filter(l => !existingSet.has(l.place_id));
+        const skipped = before - leads.length;
+        if (skipped > 0) {
+          console.log(`    Skipped ${skipped} already-known leads (dedup by place_id).`);
+        }
+      }
+    } catch (err) {
+      console.warn(`⚠️   Dedup check failed: ${err.message} — analyzing all`);
+    }
+
+    if (leads.length === 0) {
+      console.log('✅  All leads already in database — nothing new to analyze.');
+      process.exit(0);
+    }
+  }
+
   // 2. Analyze
   console.log(`\n⚡  Analyzing ${leads.length} websites (PageSpeed + scraping)...`);
   try {

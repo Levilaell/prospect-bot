@@ -7,7 +7,7 @@ import { analyze }          from './analyze.js';
 import { visualAnalysis }   from './visual.js';
 import { score }            from './score.js';
 import { generateMessages } from './message.js';
-import { upsertLeads }      from '../lib/supabase.js';
+import { upsertLeads, getClient } from '../lib/supabase.js';
 import { enrichLeads }      from '../lib/enricher.js';
 import { sendWhatsApp }     from '../lib/whatsapp.js';
 import { getAlreadySentPlaceIds, sendToInstantly } from '../lib/instantly.js';
@@ -37,6 +37,33 @@ async function processItem(item, { minScore, dry, send, limit }) {
     return { collected: 0, qualified: 0, sent: 0 };
   }
   console.log(`    ${tag} Found ${leads.length} businesses.`);
+
+  // 1.5. Dedup — skip leads that already exist in Supabase (saves API calls)
+  try {
+    const placeIds = leads.map(l => l.place_id);
+    const client = getClient();
+    const { data: existing } = await client
+      .from('leads')
+      .select('place_id')
+      .in('place_id', placeIds);
+
+    if (existing && existing.length > 0) {
+      const existingSet = new Set(existing.map(r => r.place_id));
+      const before = leads.length;
+      leads = leads.filter(l => !existingSet.has(l.place_id));
+      const skipped = before - leads.length;
+      if (skipped > 0) {
+        console.log(`    ${tag} Skipped ${skipped} already-known leads (dedup by place_id).`);
+      }
+    }
+  } catch (err) {
+    console.warn(`⚠️  ${tag} dedup check failed: ${err.message} — analyzing all`);
+  }
+
+  if (leads.length === 0) {
+    console.log(`    ${tag} All leads already known — skipping analysis.`);
+    return { collected: 0, qualified: 0, sent: 0 };
+  }
 
   // 2. Analyze
   console.log(`⚡  ${tag} Analyzing ${leads.length} websites...`);
