@@ -184,6 +184,8 @@ function sanitizeLead(lead) {
     niche:              str(lead.niche),
     status:             str(lead.status),
     status_updated_at:  str(lead.status_updated_at),
+    message_variant:    str(lead.message_variant),
+    no_website:         bool(lead.no_website),
   };
 }
 
@@ -224,6 +226,8 @@ async function exportCsv(leads, filePath) {
       { id: 'outreach_channel',   title: 'outreach_channel' },
       { id: 'email',              title: 'email' },
       { id: 'email_source',       title: 'email_source' },
+      { id: 'message_variant',    title: 'message_variant' },
+      { id: 'no_website',         title: 'no_website' },
     ],
   });
   await writer.writeRecords(leads.map(sanitizeLead));
@@ -275,32 +279,38 @@ async function main() {
   // 1. Collect
   console.log(`\n🔍  Collecting up to ${limit} "${opts.niche}" in ${opts.city}...`);
   let leads;
+  let noWebsiteLeads = [];
   try {
-    leads = await collect(opts);
+    const result = await collect(opts);
+    leads = result.leads;
+    noWebsiteLeads = result.noWebsiteLeads;
   } catch (err) {
     fatal(`collect step failed: ${err.message}`);
   }
 
-  if (!leads || leads.length === 0) {
+  const totalFound = leads.length + noWebsiteLeads.length;
+  if (totalFound === 0) {
     fatal('No businesses found — check your --niche and --city values, and verify GOOGLE_MAPS_API_KEY.');
   }
-  console.log(`    Found ${leads.length} businesses with usable websites.`);
+  console.log(`    Found ${totalFound} businesses (${leads.length} with website, ${noWebsiteLeads.length} without).`);
 
   // 1.5. Dedup — skip leads already in Supabase (saves API calls)
   if (exportTarget === 'supabase' || exportTarget === 'both') {
     try {
-      const placeIds = leads.map(l => l.place_id);
+      const allPlaceIds = [...leads, ...noWebsiteLeads].map(l => l.place_id);
       const client = getClient();
       const { data: existing } = await client
         .from('leads')
         .select('place_id')
-        .in('place_id', placeIds);
+        .in('place_id', allPlaceIds);
 
       if (existing && existing.length > 0) {
         const existingSet = new Set(existing.map(r => r.place_id));
-        const before = leads.length;
+        const beforeLeads = leads.length;
+        const beforeNoWeb = noWebsiteLeads.length;
         leads = leads.filter(l => !existingSet.has(l.place_id));
-        const skipped = before - leads.length;
+        noWebsiteLeads = noWebsiteLeads.filter(l => !existingSet.has(l.place_id));
+        const skipped = (beforeLeads - leads.length) + (beforeNoWeb - noWebsiteLeads.length);
         if (skipped > 0) {
           console.log(`    Skipped ${skipped} already-known leads (dedup by place_id).`);
         }
@@ -309,66 +319,86 @@ async function main() {
       console.warn(`⚠️   Dedup check failed: ${err.message} — analyzing all`);
     }
 
-    if (leads.length === 0) {
+    if (leads.length === 0 && noWebsiteLeads.length === 0) {
       console.log('✅  All leads already in database — nothing new to analyze.');
       process.exit(0);
     }
   }
 
-  // 2. Analyze
-  console.log(`\n⚡  Analyzing ${leads.length} websites (PageSpeed + scraping)...`);
-  try {
-    leads = await analyze(leads);
-  } catch (err) {
-    fatal(`analyze step failed: ${err.message}`);
-  }
+  // ── Pipeline for leads WITH websites ──────────────────────────────────────
 
-  const analyzedCount = leads.filter((l) => !l.scrape_failed).length;
-  console.log(`    Analyzed: ${analyzedCount}/${leads.length}  (${leads.length - analyzedCount} failed)`);
+  let qualified = [];
 
-  // 2.5. Visual analysis
-  if (!dry && process.env.ANTHROPIC_API_KEY) {
-    console.log(`\n👁️   Running visual analysis on ${leads.length} websites...`);
+  if (leads.length > 0) {
+    // 2. Analyze
+    console.log(`\n⚡  Analyzing ${leads.length} websites (PageSpeed + scraping)...`);
     try {
-      leads = await visualAnalysis(leads);
-      const visualized = leads.filter((l) => l.visual_score !== null).length;
-      console.log(`    Visual: ${visualized}/${leads.length} sites analyzed`);
+      leads = await analyze(leads);
     } catch (err) {
-      console.warn(`⚠️   Visual analysis failed (continuing without it): ${err.message}`);
+      fatal(`analyze step failed: ${err.message}`);
+    }
+
+    const analyzedCount = leads.filter((l) => !l.scrape_failed).length;
+    console.log(`    Analyzed: ${analyzedCount}/${leads.length}  (${leads.length - analyzedCount} failed)`);
+
+    // 2.5. Visual analysis
+    if (!dry && process.env.ANTHROPIC_API_KEY) {
+      console.log(`\n👁️   Running visual analysis on ${leads.length} websites...`);
+      try {
+        leads = await visualAnalysis(leads);
+        const visualized = leads.filter((l) => l.visual_score !== null).length;
+        console.log(`    Visual: ${visualized}/${leads.length} sites analyzed`);
+      } catch (err) {
+        console.warn(`⚠️   Visual analysis failed (continuing without it): ${err.message}`);
+        leads = leads.map((l) => ({ ...l, visual_score: null, visual_notes: [] }));
+      }
+    } else {
       leads = leads.map((l) => ({ ...l, visual_score: null, visual_notes: [] }));
     }
-  } else {
-    leads = leads.map((l) => ({ ...l, visual_score: null, visual_notes: [] }));
+
+    // 3. Score
+    console.log('\n🎯  Scoring leads...');
+    try {
+      leads = await score(leads);
+    } catch (err) {
+      fatal(`score step failed: ${err.message}`);
+    }
+
+    qualified = leads.filter((l) => (l.pain_score ?? 0) >= minScore);
+    console.log(`    Qualified: ${qualified.length}/${leads.length}  (score ≥ ${minScore})`);
   }
 
-  // 3. Score
-  console.log('\n🎯  Scoring leads...');
-  try {
-    leads = await score(leads);
-  } catch (err) {
-    fatal(`score step failed: ${err.message}`);
+  // ── Pipeline for leads WITHOUT websites ─────────────────────────────────
+  if (noWebsiteLeads.length > 0) {
+    console.log(`\n🌐  ${noWebsiteLeads.length} leads without website — marking as high-priority prospects.`);
+    noWebsiteLeads = noWebsiteLeads.map(l => ({
+      ...l,
+      pain_score: 10,
+      score_reasons: ['no_website'],
+      scrape_failed: false,
+    }));
   }
 
-  const qualified = leads.filter((l) => (l.pain_score ?? 0) >= minScore);
-  console.log(`    Qualified: ${qualified.length}/${leads.length}  (score ≥ ${minScore})`);
+  // ── Merge pipelines ────────────────────────────────────────────────────
+  const allQualified = [...qualified, ...noWebsiteLeads];
 
   if (dry) {
     console.log('\n    --dry mode: skipping message generation and export.');
-    printSummary({ startTime, leads, qualified, csvPath: null });
+    printSummary({ startTime, leads, qualified: allQualified, csvPath: null });
     return;
   }
 
-  if (qualified.length === 0) {
+  if (allQualified.length === 0) {
     console.log('\n    No leads met the minimum score — nothing to export.');
-    printSummary({ startTime, leads, qualified, csvPath: null });
+    printSummary({ startTime, leads, qualified: allQualified, csvPath: null });
     return;
   }
 
-  // 4. Generate messages
-  console.log(`\n✉️   Generating outreach messages (${lang.toUpperCase()}) for ${qualified.length} leads...`);
+  // 4. Generate messages (handles both with-website and no-website via no_website flag)
+  console.log(`\n✉️   Generating outreach messages (${lang.toUpperCase()}) for ${allQualified.length} leads (${noWebsiteLeads.length} no-website)...`);
   let withMessages;
   try {
-    withMessages = await generateMessages(qualified, { lang });
+    withMessages = await generateMessages(allQualified, { lang });
   } catch (err) {
     fatal(`message step failed: ${err.message}`);
   }

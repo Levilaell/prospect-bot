@@ -25,33 +25,39 @@ async function processItem(item, { minScore, dry, send, limit }) {
   // 1. Collect
   console.log(`\n🔍  ${tag} Collecting up to ${limit} leads...`);
   let leads;
+  let noWebsiteLeads = [];
   try {
-    leads = await collect({ niche, city: searchCity, limit, searchCity });
+    const result = await collect({ niche, city: searchCity, limit, searchCity });
+    leads = result.leads;
+    noWebsiteLeads = result.noWebsiteLeads;
   } catch (err) {
     console.warn(`⚠️  ${tag} collect failed: ${err.message}`);
     return { collected: 0, qualified: 0, sent: 0 };
   }
 
-  if (!leads || leads.length === 0) {
+  const totalFound = leads.length + noWebsiteLeads.length;
+  if (totalFound === 0) {
     console.log(`    ${tag} No businesses found — skipping.`);
     return { collected: 0, qualified: 0, sent: 0 };
   }
-  console.log(`    ${tag} Found ${leads.length} businesses.`);
+  console.log(`    ${tag} Found ${totalFound} businesses (${leads.length} with website, ${noWebsiteLeads.length} without).`);
 
   // 1.5. Dedup — skip leads that already exist in Supabase (saves API calls)
   try {
-    const placeIds = leads.map(l => l.place_id);
+    const allPlaceIds = [...leads, ...noWebsiteLeads].map(l => l.place_id);
     const client = getClient();
     const { data: existing } = await client
       .from('leads')
       .select('place_id')
-      .in('place_id', placeIds);
+      .in('place_id', allPlaceIds);
 
     if (existing && existing.length > 0) {
       const existingSet = new Set(existing.map(r => r.place_id));
-      const before = leads.length;
+      const beforeLeads = leads.length;
+      const beforeNoWeb = noWebsiteLeads.length;
       leads = leads.filter(l => !existingSet.has(l.place_id));
-      const skipped = before - leads.length;
+      noWebsiteLeads = noWebsiteLeads.filter(l => !existingSet.has(l.place_id));
+      const skipped = (beforeLeads - leads.length) + (beforeNoWeb - noWebsiteLeads.length);
       if (skipped > 0) {
         console.log(`    ${tag} Skipped ${skipped} already-known leads (dedup by place_id).`);
       }
@@ -60,114 +66,148 @@ async function processItem(item, { minScore, dry, send, limit }) {
     console.warn(`⚠️  ${tag} dedup check failed: ${err.message} — analyzing all`);
   }
 
-  if (leads.length === 0) {
-    console.log(`    ${tag} All leads already known — skipping analysis.`);
+  if (leads.length === 0 && noWebsiteLeads.length === 0) {
+    console.log(`    ${tag} All leads already known — skipping.`);
     return { collected: 0, qualified: 0, sent: 0 };
   }
 
   // 1.6. Phone filter (BR only) — disqualify leads without valid WhatsApp number
   if (lang === 'pt') {
-    const validWA = [];
-    const noPhone = [];
-    for (const lead of leads) {
-      const digits = (lead.phone || '').replace(/\D/g, '');
-      const normalized = digits.startsWith('55') ? digits
-        : digits.startsWith('0') ? '55' + digits.slice(1)
-        : '55' + digits;
-      if (normalized.match(/^55\d{2}9\d{8}$/)) {
-        validWA.push(lead);
-      } else {
-        noPhone.push(lead);
+    const filterByPhone = (list) => {
+      const valid = [];
+      const invalid = [];
+      for (const lead of list) {
+        const digits = (lead.phone || '').replace(/\D/g, '');
+        const normalized = digits.startsWith('55') ? digits
+          : digits.startsWith('0') ? '55' + digits.slice(1)
+          : '55' + digits;
+        if (normalized.match(/^55\d{2}9\d{8}$/)) {
+          valid.push(lead);
+        } else {
+          invalid.push(lead);
+        }
       }
-    }
-    if (noPhone.length > 0) {
-      const minimal = noPhone.map(l => ({
+      return { valid, invalid };
+    };
+
+    const webResult = filterByPhone(leads);
+    const noWebResult = filterByPhone(noWebsiteLeads);
+    const allNoPhone = [...webResult.invalid, ...noWebResult.invalid];
+
+    if (allNoPhone.length > 0) {
+      const minimal = allNoPhone.map(l => ({
         place_id: l.place_id,
         niche: l.niche,
         search_city: l.search_city,
         city: l.city,
         business_name: l.business_name,
         phone: l.phone || null,
+        no_website: l.no_website || false,
         pain_score: 0,
         status: 'disqualified',
         status_updated_at: new Date().toISOString(),
       }));
       await upsertLeads(minimal);
-      console.log(`    ${tag} Disqualified ${noPhone.length} leads without valid WhatsApp number.`);
+      console.log(`    ${tag} Disqualified ${allNoPhone.length} leads without valid WhatsApp number.`);
     }
-    leads = validWA;
-    if (leads.length === 0) {
-      console.log(`    ${tag} No leads with valid WhatsApp — skipping analysis.`);
-      return { collected: noPhone.length, qualified: 0, sent: 0 };
+    leads = webResult.valid;
+    noWebsiteLeads = noWebResult.valid;
+    if (leads.length === 0 && noWebsiteLeads.length === 0) {
+      console.log(`    ${tag} No leads with valid WhatsApp — skipping.`);
+      return { collected: allNoPhone.length, qualified: 0, sent: 0 };
     }
   }
 
-  // 2. Analyze
-  console.log(`⚡  ${tag} Analyzing ${leads.length} websites...`);
-  try {
-    leads = await analyze(leads);
-  } catch (err) {
-    console.warn(`⚠️  ${tag} analyze failed: ${err.message}`);
-    return { collected: leads.length, qualified: 0, sent: 0 };
-  }
+  // ── Pipeline for leads WITH websites ────────────────────────────────────
 
-  // 2.5. Visual analysis
-  if (!dry && process.env.ANTHROPIC_API_KEY) {
+  let qualified = [];
+
+  if (leads.length > 0) {
+    // 2. Analyze
+    console.log(`⚡  ${tag} Analyzing ${leads.length} websites...`);
     try {
-      leads = await visualAnalysis(leads);
-    } catch {
+      leads = await analyze(leads);
+    } catch (err) {
+      console.warn(`⚠️  ${tag} analyze failed: ${err.message}`);
+      return { collected: leads.length + noWebsiteLeads.length, qualified: 0, sent: 0 };
+    }
+
+    // 2.5. Visual analysis
+    if (!dry && process.env.ANTHROPIC_API_KEY) {
+      try {
+        leads = await visualAnalysis(leads);
+      } catch {
+        leads = leads.map((l) => ({ ...l, visual_score: null, visual_notes: [] }));
+      }
+    } else {
       leads = leads.map((l) => ({ ...l, visual_score: null, visual_notes: [] }));
     }
-  } else {
-    leads = leads.map((l) => ({ ...l, visual_score: null, visual_notes: [] }));
+
+    // 3. Score
+    try {
+      leads = await score(leads);
+    } catch (err) {
+      console.warn(`⚠️  ${tag} score failed: ${err.message}`);
+    }
+
+    qualified = leads.filter((l) => (l.pain_score ?? 0) >= minScore);
+    const disqualified = leads.filter((l) => (l.pain_score ?? 0) < minScore);
+    console.log(`🎯  ${tag} Qualified: ${qualified.length}/${leads.length} with-website leads (score >= ${minScore})`);
+
+    if (disqualified.length > 0) {
+      const minimal = disqualified.map(l => ({
+        place_id: l.place_id,
+        niche: l.niche,
+        search_city: l.search_city,
+        city: l.city,
+        business_name: l.business_name,
+        pain_score: l.pain_score,
+        status: 'disqualified',
+        status_updated_at: new Date().toISOString(),
+      }));
+      await upsertLeads(minimal);
+      console.log(`    ${tag} Saved ${minimal.length} disqualified leads (minimal, dedup only).`);
+    }
   }
 
-  // 3. Score
-  try {
-    leads = await score(leads);
-  } catch (err) {
-    console.warn(`⚠️  ${tag} score failed: ${err.message}`);
-  }
+  // ── Pipeline for leads WITHOUT websites ─────────────────────────────────
+  // They skip analyze/score/visual — pain_score=10 (maximum need: no site at all)
 
-  const qualified = leads.filter((l) => (l.pain_score ?? 0) >= minScore);
-  const disqualified = leads.filter((l) => (l.pain_score ?? 0) < minScore);
-  console.log(`🎯  ${tag} Qualified: ${qualified.length}/${leads.length} (score >= ${minScore})`);
-
-  // Save disqualified leads with minimal data — just enough for dedup, invisible in dashboard
-  if (disqualified.length > 0) {
-    const minimal = disqualified.map(l => ({
-      place_id: l.place_id,
-      niche: l.niche,
-      search_city: l.search_city,
-      city: l.city,
-      business_name: l.business_name,
-      pain_score: l.pain_score,
-      status: 'disqualified',
-      status_updated_at: new Date().toISOString(),
+  if (noWebsiteLeads.length > 0) {
+    console.log(`🌐  ${tag} ${noWebsiteLeads.length} leads without website — marking as high-priority prospects.`);
+    noWebsiteLeads = noWebsiteLeads.map(l => ({
+      ...l,
+      pain_score: 10,
+      score_reasons: ['no_website'],
+      scrape_failed: false,
     }));
-    await upsertLeads(minimal);
-    console.log(`    ${tag} Saved ${minimal.length} disqualified leads (minimal, dedup only).`);
   }
+
+  // ── Merge both pipelines for message generation ─────────────────────────
+
+  const allQualified = [...qualified, ...noWebsiteLeads];
+  const totalWithWebsite = leads.length;
+  const totalCollected = totalWithWebsite + noWebsiteLeads.length;
 
   if (dry) {
-    if (qualified.length > 0) await upsertLeads(qualified);
-    return { collected: leads.length, qualified: qualified.length, sent: 0 };
+    if (allQualified.length > 0) await upsertLeads(allQualified);
+    return { collected: totalCollected, qualified: allQualified.length, sent: 0 };
   }
 
-  if (qualified.length === 0) {
-    return { collected: leads.length, qualified: 0, sent: 0 };
+  if (allQualified.length === 0) {
+    return { collected: totalCollected, qualified: 0, sent: 0 };
   }
 
-  // 4. Generate messages
-  console.log(`✉️  ${tag} Generating ${lang.toUpperCase()} messages for ${qualified.length} leads...`);
-  let withMessages = qualified;
+  // 4. Generate messages (handles both with-website and no-website via no_website flag)
+  console.log(`✉️  ${tag} Generating ${lang.toUpperCase()} messages for ${allQualified.length} leads (${noWebsiteLeads.length} no-website)...`);
+  let withMessages = allQualified;
   try {
-    withMessages = await generateMessages(qualified, { lang });
+    withMessages = await generateMessages(allQualified, { lang });
   } catch (err) {
     console.warn(`⚠️  ${tag} message generation failed: ${err.message}`);
   }
 
-  // 5. Export qualified to Supabase (full data)
+  // 5. Export to Supabase (full data)
   await upsertLeads(withMessages);
 
   // 6. Send outreach (if --send)
@@ -225,7 +265,7 @@ async function processItem(item, { minScore, dry, send, limit }) {
     }
   }
 
-  return { collected: leads.length, qualified: qualified.length, sent: sentCount };
+  return { collected: totalCollected, qualified: allQualified.length, sent: sentCount };
 }
 
 /**

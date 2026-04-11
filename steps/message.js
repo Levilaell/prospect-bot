@@ -2,35 +2,115 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { runBatch } from "../lib/utils.js";
-import { SYSTEM_EN, SYSTEM_PT, REASON_LABELS, translateReasons } from "../lib/prompts.js";
+import {
+  SYSTEM_EN, SYSTEM_PT,
+  SYSTEM_NO_WEBSITE_EN, SYSTEM_NO_WEBSITE_PT,
+  translateReasons,
+} from "../lib/prompts.js";
+import { getNicheContext } from "../lib/niche-templates.js";
+import { pickVariant, getVariantInstruction } from "../lib/variants.js";
+
+// ── Business size label based on review count ────────────────────────────────
+
+function businessSizeLabel(reviewCount) {
+  if (reviewCount == null) return null;
+  if (reviewCount <= 10) return 'micro (few reviews — likely new or low visibility)';
+  if (reviewCount <= 50) return 'small (some traction, growing)';
+  if (reviewCount <= 200) return 'established (solid local presence)';
+  return 'popular (well-known in the area)';
+}
+
+function businessSizeLabelPt(reviewCount) {
+  if (reviewCount == null) return null;
+  if (reviewCount <= 10) return 'micro (poucas avaliações — provavelmente novo ou pouca visibilidade)';
+  if (reviewCount <= 50) return 'pequeno (alguma tração, crescendo)';
+  if (reviewCount <= 200) return 'estabelecido (presença local sólida)';
+  return 'popular (bem conhecido na região)';
+}
+
+// ── User prompt builder ──────────────────────────────────────────────────────
 
 function buildUserPrompt(lead, lang) {
-  const problems = translateReasons(lead.score_reasons ?? [], lead.tech_stack);
+  const isNoWebsite = lead.no_website === true;
+  const niche = getNicheContext(lead.niche, lang);
+  const sizeLabel = lang === 'pt'
+    ? businessSizeLabelPt(lead.review_count)
+    : businessSizeLabel(lead.review_count);
+
   const lines = [
     `Business name: ${lead.business_name}`,
     `Niche: ${lead.niche ?? "local business"}`,
     `City: ${lead.city}`,
-    `Detected problems:\n${problems.map((p) => `- ${p}`).join("\n")}`,
   ];
 
-  // Include visual notes if available
-  if (Array.isArray(lead.visual_notes) && lead.visual_notes.length > 0) {
-    lines.push(`Visual issues detected on the website:\n${lead.visual_notes.map((n) => `- ${n}`).join("\n")}`);
+  // ── Business context (rating, reviews, size) ────
+  if (lead.rating != null) {
+    lines.push(`Google rating: ${lead.rating}/5 (${lead.review_count ?? 0} reviews)`);
+  }
+  if (sizeLabel) {
+    lines.push(`Business size: ${sizeLabel}`);
   }
 
-  if (lead.mobile_score !== null && lead.mobile_score !== undefined) {
-    lines.push(`Mobile speed score: ${lead.mobile_score}/100`);
-  }
-  if (lead.tech_stack && lead.tech_stack !== "unknown") {
-    lines.push(`Site platform: ${lead.tech_stack}`);
+  // ── Niche-specific context ────
+  lines.push(`\nNiche-specific services to highlight: ${niche.focus}`);
+  lines.push(`Niche market insight: ${niche.pain}`);
+  lines.push(`Tone guidance: ${niche.tone}`);
+
+  if (isNoWebsite) {
+    // No-website leads: no tech analysis, different framing
+    lines.push(`\nThis business has NO website. They are invisible online.`);
+    if (lead.phone) {
+      lines.push(`They have a phone number, so they exist — just no web presence.`);
+    }
+  } else {
+    // Regular leads: include detected problems
+    const problems = translateReasons(lead.score_reasons ?? [], lead.tech_stack);
+    if (problems.length > 0) {
+      lines.push(`\nDetected problems:\n${problems.map((p) => `- ${p}`).join("\n")}`);
+    }
+
+    if (Array.isArray(lead.visual_notes) && lead.visual_notes.length > 0) {
+      lines.push(`Visual issues detected on the website:\n${lead.visual_notes.map((n) => `- ${n}`).join("\n")}`);
+    }
+
+    if (lead.mobile_score !== null && lead.mobile_score !== undefined) {
+      lines.push(`Mobile speed score: ${lead.mobile_score}/100`);
+    }
+    if (lead.tech_stack && lead.tech_stack !== "unknown") {
+      lines.push(`Site platform: ${lead.tech_stack}`);
+    }
+    if (lead.website) {
+      lines.push(`Current website: ${lead.website}`);
+    }
   }
 
   lines.push(
-    `Language: ${lang === "pt" ? "Portuguese (Brazilian)" : "English"}`,
+    `\nLanguage: ${lang === "pt" ? "Portuguese (Brazilian)" : "English"}`,
   );
 
   return lines.join("\n");
 }
+
+// ── System prompt assembler ──────────────────────────────────────────────────
+
+function buildSystemPrompt(lead, lang, variant) {
+  const isNoWebsite = lead.no_website === true;
+
+  // Base system prompt
+  let base;
+  if (isNoWebsite) {
+    base = lang === 'pt' ? SYSTEM_NO_WEBSITE_PT : SYSTEM_NO_WEBSITE_EN;
+  } else {
+    base = lang === 'pt' ? SYSTEM_PT : SYSTEM_EN;
+  }
+
+  // Append variant instruction
+  const variantBlock = getVariantInstruction(variant, lang);
+
+  return `${base}\n\n--- MESSAGE VARIANT ---\n${variantBlock}`;
+}
+
+// ── Main export ──────────────────────────────────────────────────────────────
 
 export async function generateMessages(leads, { lang = "en" } = {}) {
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -45,18 +125,21 @@ export async function generateMessages(leads, { lang = "en" } = {}) {
         `\r  ✉️   Generating messages [${done}/${total}]...`.padEnd(60),
       );
 
+      // Assign A/B variant
+      const variant = pickVariant();
+
       try {
         const response = await client.messages.create({
           model: "claude-haiku-4-5-20251001",
           max_tokens: 300,
-          system: lang === "pt" ? SYSTEM_PT : SYSTEM_EN,
+          system: buildSystemPrompt(lead, lang, variant),
           messages: [{ role: "user", content: buildUserPrompt(lead, lang) }],
         });
 
         const message = response.content[0]?.text?.trim() ?? "";
-        return { ...lead, message };
+        return { ...lead, message, message_variant: variant };
       } catch {
-        return { ...lead, message: "" };
+        return { ...lead, message: "", message_variant: variant };
       }
     },
     5,

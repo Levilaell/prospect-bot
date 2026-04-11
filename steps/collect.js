@@ -104,25 +104,36 @@ export async function collect({ niche, city, limit, searchCity }) {
   }, 5);
   process.stdout.write('\n');
 
-  // ── Filter: keep only leads with a usable, non-social website ────────────
+  // ── Separate leads with usable websites from those without ───────────────
   const collected_at = new Date().toISOString();
-  const leads = withDetails
-    .filter((p) => isUsableWebsite(p.website))
-    .map((p) => ({
-      place_id:      p.place_id,
-      business_name: p.business_name,
-      address:       p.address,
-      city:          extractCity(p.address),
-      search_city:   searchCity || city,
-      niche:         niche,
-      phone:         p.phone,
-      website:       p.website,
-      rating:        p.rating,
-      review_count:  p.review_count,
-      status:        'prospected',
-      status_updated_at: collected_at,
-      collected_at,
-    }));
 
-  return leads;
+  const buildLead = (p, hasWebsite) => ({
+    place_id:      p.place_id,
+    business_name: p.business_name,
+    address:       p.address,
+    city:          extractCity(p.address),
+    search_city:   searchCity || city,
+    niche:         niche,
+    phone:         p.phone,
+    website:       hasWebsite ? p.website : null,
+    rating:        p.rating,
+    review_count:  p.review_count,
+    no_website:    !hasWebsite,
+    status:        'prospected',
+    status_updated_at: collected_at,
+    collected_at,
+  });
+
+  const leads = [];
+  const noWebsiteLeads = [];
+
+  for (const p of withDetails) {
+    if (isUsableWebsite(p.website)) {
+      leads.push(buildLead(p, true));
+    } else {
+      noWebsiteLeads.push(buildLead(p, false));
+    }
+  }
+
+  return { leads, noWebsiteLeads };
 }
