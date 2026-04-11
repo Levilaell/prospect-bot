@@ -14,6 +14,7 @@ import { upsertLeads, getClient }                  from './lib/supabase.js';
 import { getAlreadySentPlaceIds, sendToInstantly } from './lib/instantly.js';
 import { sendWhatsApp }                            from './lib/whatsapp.js';
 import { enrichLeads }                             from './lib/enricher.js';
+import { runAuto }                                 from './steps/auto.js';
 
 const { createObjectCsvWriter } = csvWriterPkg;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -32,6 +33,7 @@ try {
       'min-score':   { type: 'string',  default: '3' },
       dry:           { type: 'boolean', default: false },
       send:          { type: 'boolean', default: false },
+      auto:          { type: 'boolean', default: false },
     },
     strict: true,
     allowPositionals: true,
@@ -39,6 +41,7 @@ try {
 } catch (err) {
   console.error(`❌  Invalid arguments: ${err.message}`);
   console.error('    Usage: node prospect.js --niche <niche> --city <city> [--limit N] [--export csv|supabase|both] [--lang en|pt] [--min-score N] [--dry]');
+  console.error('           node prospect.js --auto [--limit N] [--min-score N] [--dry] [--send]');
   process.exit(1);
 }
 
@@ -48,6 +51,29 @@ function fatal(msg) {
   console.error(`❌  ${msg}`);
   process.exit(1);
 }
+
+// ── Auto mode ─────────────────────────────────────────────────────────────────
+if (raw.auto) {
+  // Auto mode only requires Supabase + Google Maps keys
+  if (!process.env.GOOGLE_MAPS_API_KEY) fatal('GOOGLE_MAPS_API_KEY is not set in .env');
+  if (!process.env.SUPABASE_URL)        fatal('SUPABASE_URL is not set in .env (required for --auto)');
+  if (!process.env.SUPABASE_SERVICE_KEY) fatal('SUPABASE_SERVICE_KEY is not set in .env (required for --auto)');
+
+  const autoLimit    = parseInt(raw.limit, 10) || 20;
+  const autoMinScore = parseInt(raw['min-score'], 10) || 3;
+
+  runAuto({
+    minScore: autoMinScore,
+    dry:      raw.dry,
+    send:     raw.send,
+    limit:    autoLimit,
+  }).catch((err) => {
+    console.error(`❌  Auto mode fatal: ${err.message}`);
+    process.exit(1);
+  });
+
+  // Prevent the manual pipeline from running — runAuto handles everything
+} else {
 
 if (!raw.niche)  fatal('--niche is required  (e.g. --niche "dentists")');
 if (!raw.city)   fatal('--city is required   (e.g. --city "Miami, FL")');
@@ -424,3 +450,5 @@ main().catch((err) => {
   console.error(`❌  Fatal: ${err.message}`);
   process.exit(1);
 });
+
+} // end else (manual mode)

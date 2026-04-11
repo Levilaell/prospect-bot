@@ -59,7 +59,7 @@ async function fetchDetails(placeId, apiKey) {
   };
 }
 
-export async function collect({ niche, city, limit }) {
+export async function collect({ niche, city, limit, searchCity }) {
   const apiKey = process.env.GOOGLE_MAPS_API_KEY;
   if (!apiKey) throw new Error('GOOGLE_MAPS_API_KEY is not set');
 
@@ -113,6 +113,7 @@ export async function collect({ niche, city, limit }) {
       business_name: p.business_name,
       address:       p.address,
       city:          extractCity(p.address),
+      search_city:   searchCity || city,
       niche:         niche,
       phone:         p.phone,
       website:       p.website,
