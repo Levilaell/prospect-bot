@@ -272,18 +272,20 @@ async function processItem(item, { minScore, dry, send, limit }) {
 /**
  * Main autonomous runner.
  *
- * @param {object} opts - { minScore, dry, send, limit }
+ * @param {object} opts - { minScore, dry, send, limit, market }
+ * @param {string} opts.market - 'BR' | 'US' | 'all' (default 'all')
  */
-export async function runAuto({ minScore = 3, dry = false, send = false, limit = 20 }) {
+export async function runAuto({ minScore = 3, dry = false, send = false, limit = 20, market = 'all' }) {
   const startTime = Date.now();
+  const marketLabel = market === 'all' ? 'BR + US' : market;
 
-  console.log('\n🤖  AUTONOMOUS MODE');
+  console.log(`\n🤖  AUTONOMOUS MODE — ${marketLabel}`);
   console.log('━'.repeat(50));
-  console.log(`    min-score: ${minScore}  |  limit/item: ${limit}  |  dry: ${dry}  |  send: ${send}`);
+  console.log(`    market: ${marketLabel}  |  min-score: ${minScore}  |  limit/item: ${limit}  |  dry: ${dry}  |  send: ${send}`);
 
-  // Generate queue from Supabase diff
+  // Generate queue from Supabase diff (filtered by market)
   console.log('\n📋  Generating queue...');
-  const { queue, stats } = await generateQueue();
+  const { queue, stats } = await generateQueue({ market });
 
   console.log(`    Total combos in config:  ${stats.total}`);
   console.log(`    Already prospected:      ${stats.prospected}`);

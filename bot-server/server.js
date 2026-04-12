@@ -235,7 +235,8 @@ const server = createServer(async (req, res) => {
   }
 
   // Queue API — returns auto-mode queue as JSON
-  if (req.method === 'GET' && req.url === '/api/bot/queue') {
+  // Supports ?market=BR|US|all filter
+  if (req.method === 'GET' && (req.url === '/api/bot/queue' || req.url?.startsWith('/api/bot/queue?'))) {
     const auth = req.headers['authorization'] || ''
     if (BOT_SECRET && auth !== `Bearer ${BOT_SECRET}`) {
       res.writeHead(401, { 'Content-Type': 'application/json' })
@@ -243,7 +244,9 @@ const server = createServer(async (req, res) => {
     }
 
     try {
-      const { queue, stats } = await generateQueue()
+      const urlParams = new URL(req.url, `http://localhost:${PORT}`).searchParams
+      const market = urlParams.get('market') || 'all'
+      const { queue, stats } = await generateQueue({ market })
       // Group queue by country for the UI
       const brItems = queue.filter(i => i.country === 'BR')
       const usItems = queue.filter(i => i.country === 'US')
@@ -282,10 +285,12 @@ const server = createServer(async (req, res) => {
     const minScore = body.min_score ?? '4'
     const dryRun   = body.dry_run ?? false
     const send     = body.send ?? false
+    const market   = body.market ?? 'all'
 
     const args = [
       prospectPath,
       '--auto',
+      '--market', String(market),
       '--limit', String(limit),
       '--min-score', String(minScore),
       '--export', 'supabase',

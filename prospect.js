@@ -34,6 +34,7 @@ try {
       dry:           { type: 'boolean', default: false },
       send:          { type: 'boolean', default: false },
       auto:          { type: 'boolean', default: false },
+      market:        { type: 'string',  default: 'all' },
     },
     strict: true,
     allowPositionals: true,
@@ -41,7 +42,7 @@ try {
 } catch (err) {
   console.error(`❌  Invalid arguments: ${err.message}`);
   console.error('    Usage: node prospect.js --niche <niche> --city <city> [--limit N] [--export csv|supabase|both] [--lang en|pt] [--min-score N] [--dry]');
-  console.error('           node prospect.js --auto [--limit N] [--min-score N] [--dry] [--send]');
+  console.error('           node prospect.js --auto [--market BR|US|all] [--limit N] [--min-score N] [--dry] [--send]');
   process.exit(1);
 }
 
@@ -61,12 +62,16 @@ if (raw.auto) {
 
   const autoLimit    = parseInt(raw.limit, 10) || 20;
   const autoMinScore = parseInt(raw['min-score'], 10) || 3;
+  const market       = raw.market?.toUpperCase() === 'BR' ? 'BR'
+                     : raw.market?.toUpperCase() === 'US' ? 'US'
+                     : 'all';
 
   runAuto({
     minScore: autoMinScore,
     dry:      raw.dry,
     send:     raw.send,
     limit:    autoLimit,
+    market,
   }).catch((err) => {
     console.error(`❌  Auto mode fatal: ${err.message}`);
     process.exit(1);
