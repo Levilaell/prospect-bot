@@ -150,7 +150,9 @@ export async function generateMessages(leads, { lang = "en", channel } = {}) {
           messages: [{ role: "user", content: buildUserPrompt(lead, lang) }],
         });
 
-        const raw = response.content[0]?.text?.trim() ?? "";
+        const rawText = response.content[0]?.text?.trim() ?? "";
+        // Strip markdown code fences if Claude wraps response in ```json ... ```
+        const raw = rawText.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/i, '').trim();
 
         // Email channel: parse JSON {subject, body}
         if (isEmail) {
