@@ -12,7 +12,7 @@ import { enrichLeads }      from '../lib/enricher.js';
 import { sendWhatsApp }     from '../lib/whatsapp.js';
 import { getAlreadySentPlaceIds, sendToInstantly } from '../lib/instantly.js';
 
-const WHATSAPP_DAILY_LIMIT = 50;
+const WHATSAPP_DAILY_LIMIT = 15;
 
 /**
  * Runs a single queue item through the full pipeline.
