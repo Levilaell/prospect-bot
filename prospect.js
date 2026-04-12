@@ -117,16 +117,21 @@ if (send && !dry) {
     if (!process.env.EVOLUTION_API_KEY)  fatal('EVOLUTION_API_KEY is not set in .env (required for --send --lang pt)');
     if (!process.env.EVOLUTION_INSTANCE) fatal('EVOLUTION_INSTANCE is not set in .env (required for --send --lang pt)');
   }
-  if (!process.env.HUNTER_API_KEY) {
+  if (lang === 'pt' && !process.env.HUNTER_API_KEY) {
     console.warn('⚠️   HUNTER_API_KEY not set — email enrichment will rely on scraping only');
   }
 }
+
+const country = lang === 'pt' ? 'BR' : 'US';
+const channel = lang === 'pt' ? 'whatsapp' : 'email';
 
 const opts = {
   niche: raw.niche,
   city:  raw.city,
   limit,
   lang,
+  country,
+  channel,
   minScore,
   dry,
   send,
@@ -186,6 +191,8 @@ function sanitizeLead(lead) {
     status_updated_at:  str(lead.status_updated_at),
     message_variant:    str(lead.message_variant),
     no_website:         bool(lead.no_website),
+    email_subject:      str(lead.email_subject),
+    country:            str(lead.country),
   };
 }
 
@@ -228,6 +235,8 @@ async function exportCsv(leads, filePath) {
       { id: 'email_source',       title: 'email_source' },
       { id: 'message_variant',    title: 'message_variant' },
       { id: 'no_website',         title: 'no_website' },
+      { id: 'email_subject',      title: 'email_subject' },
+      { id: 'country',            title: 'country' },
     ],
   });
   await writer.writeRecords(leads.map(sanitizeLead));
@@ -359,7 +368,7 @@ async function main() {
     // 3. Score
     console.log('\n🎯  Scoring leads...');
     try {
-      leads = await score(leads);
+      leads = score(leads, { country });
     } catch (err) {
       fatal(`score step failed: ${err.message}`);
     }
@@ -395,10 +404,10 @@ async function main() {
   }
 
   // 4. Generate messages (handles both with-website and no-website via no_website flag)
-  console.log(`\n✉️   Generating outreach messages (${lang.toUpperCase()}) for ${allQualified.length} leads (${noWebsiteLeads.length} no-website)...`);
+  console.log(`\n✉️   Generating ${channel} messages (${lang.toUpperCase()}) for ${allQualified.length} leads (${noWebsiteLeads.length} no-website)...`);
   let withMessages;
   try {
-    withMessages = await generateMessages(allQualified, { lang });
+    withMessages = await generateMessages(allQualified, { lang, channel });
   } catch (err) {
     fatal(`message step failed: ${err.message}`);
   }
@@ -410,7 +419,7 @@ async function main() {
 
   if (send) {
     console.log(`\n🔎  Enriching ${withMessages.length} leads with email...`);
-    withMessages = await enrichLeads(withMessages);
+    withMessages = await enrichLeads(withMessages, { country });
 
     forWhatsApp  = withMessages.filter((l) => lang === 'pt' && l.phone);
     forInstantly = withMessages.filter((l) => lang !== 'pt' && l.email);

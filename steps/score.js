@@ -2,11 +2,12 @@
 
 const OUTDATED_BUILDERS = new Set(['wix', 'squarespace', 'weebly', 'blogger']);
 
-function scoreLead(lead) {
+function scoreLead(lead, country) {
   if (lead.scrape_failed) {
     return { ...lead, pain_score: 0, score_reasons: ['scrape_failed'] };
   }
 
+  const isUS = country === 'US';
   const reasons = [];
   let points = 0;
 
@@ -31,9 +32,13 @@ function scoreLead(lead) {
   }
 
   // ── Conversion essentials ──
-  if (!lead.has_form)           { reasons.push('no_form');            points += 2; }
-  if (!lead.has_booking)        { reasons.push('no_booking');         points += 1; }
-  if (!lead.has_whatsapp)       { reasons.push('no_whatsapp');        points += 1; }
+  if (!lead.has_form)    { reasons.push('no_form');    points += 2; }
+  if (!lead.has_booking) { reasons.push('no_booking'); points += isUS ? 2 : 1; }
+
+  // WhatsApp is irrelevant for US — only penalize for BR
+  if (!isUS && !lead.has_whatsapp) {
+    reasons.push('no_whatsapp'); points += 1;
+  }
 
   // ── Technical ──
   if (OUTDATED_BUILDERS.has(lead.tech_stack)) {
@@ -48,8 +53,14 @@ function scoreLead(lead) {
   };
 }
 
-export function score(leads) {
+/**
+ * Scores leads and sorts by pain_score descending.
+ * @param {Array} leads
+ * @param {Object} opts
+ * @param {string} opts.country - 'US' | 'BR' (affects scoring weights)
+ */
+export function score(leads, { country = 'BR' } = {}) {
   return leads
-    .map(scoreLead)
+    .map((lead) => scoreLead(lead, country))
     .sort((a, b) => b.pain_score - a.pain_score);
 }

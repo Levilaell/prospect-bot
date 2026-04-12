@@ -19,7 +19,8 @@ const WHATSAPP_DAILY_LIMIT = 15;
  * Returns { collected, qualified, sent } counts.
  */
 async function processItem(item, { minScore, dry, send, limit }) {
-  const { niche, searchCity, lang } = item;
+  const { niche, searchCity, lang, country = lang === 'pt' ? 'BR' : 'US' } = item;
+  const channel = lang === 'pt' ? 'whatsapp' : 'email';
   const tag = `[${niche} | ${searchCity}]`;
 
   // 1. Collect
@@ -145,7 +146,7 @@ async function processItem(item, { minScore, dry, send, limit }) {
 
     // 3. Score
     try {
-      leads = await score(leads);
+      leads = score(leads, { country });
     } catch (err) {
       console.warn(`⚠️  ${tag} score failed: ${err.message}`);
     }
@@ -199,10 +200,10 @@ async function processItem(item, { minScore, dry, send, limit }) {
   }
 
   // 4. Generate messages (handles both with-website and no-website via no_website flag)
-  console.log(`✉️  ${tag} Generating ${lang.toUpperCase()} messages for ${allQualified.length} leads (${noWebsiteLeads.length} no-website)...`);
+  console.log(`✉️  ${tag} Generating ${lang.toUpperCase()} ${channel} messages for ${allQualified.length} leads (${noWebsiteLeads.length} no-website)...`);
   let withMessages = allQualified;
   try {
-    withMessages = await generateMessages(allQualified, { lang });
+    withMessages = await generateMessages(allQualified, { lang, channel });
   } catch (err) {
     console.warn(`⚠️  ${tag} message generation failed: ${err.message}`);
   }
@@ -214,7 +215,7 @@ async function processItem(item, { minScore, dry, send, limit }) {
   let sentCount = 0;
   if (send) {
     // Enrich emails
-    withMessages = await enrichLeads(withMessages);
+    withMessages = await enrichLeads(withMessages, { country });
 
     if (lang === 'pt') {
       // WhatsApp — BR leads with phone

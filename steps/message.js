@@ -5,6 +5,7 @@ import { runBatch } from "../lib/utils.js";
 import {
   SYSTEM_EN, SYSTEM_PT,
   SYSTEM_NO_WEBSITE_EN, SYSTEM_NO_WEBSITE_PT,
+  SYSTEM_EMAIL_EN, SYSTEM_NO_WEBSITE_EMAIL_EN,
   translateReasons,
 } from "../lib/prompts.js";
 import { getNicheContext } from "../lib/niche-templates.js";
@@ -93,26 +94,39 @@ function buildUserPrompt(lead, lang) {
 
 // ── System prompt assembler ──────────────────────────────────────────────────
 
-function buildSystemPrompt(lead, lang, variant) {
+function buildSystemPrompt(lead, lang, variant, channel) {
   const isNoWebsite = lead.no_website === true;
 
-  // Base system prompt
+  // Base system prompt — email channel uses dedicated email prompts
   let base;
-  if (isNoWebsite) {
+  if (channel === 'email' && lang === 'en') {
+    base = isNoWebsite ? SYSTEM_NO_WEBSITE_EMAIL_EN : SYSTEM_EMAIL_EN;
+  } else if (isNoWebsite) {
     base = lang === 'pt' ? SYSTEM_NO_WEBSITE_PT : SYSTEM_NO_WEBSITE_EN;
   } else {
     base = lang === 'pt' ? SYSTEM_PT : SYSTEM_EN;
   }
 
   // Append variant instruction
-  const variantBlock = getVariantInstruction(variant, lang);
+  const variantBlock = getVariantInstruction(variant, lang, channel);
 
   return `${base}\n\n--- MESSAGE VARIANT ---\n${variantBlock}`;
 }
 
 // ── Main export ──────────────────────────────────────────────────────────────
 
-export async function generateMessages(leads, { lang = "en" } = {}) {
+/**
+ * Generates outreach messages for leads.
+ * @param {Array} leads - leads to generate messages for
+ * @param {Object} opts
+ * @param {string} opts.lang - 'en' | 'pt'
+ * @param {string} opts.channel - 'whatsapp' | 'email' (auto-detected from lang if omitted)
+ */
+export async function generateMessages(leads, { lang = "en", channel } = {}) {
+  // Auto-detect channel from lang if not explicitly set
+  const resolvedChannel = channel ?? (lang === 'pt' ? 'whatsapp' : 'email');
+  const isEmail = resolvedChannel === 'email';
+
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
   const total = leads.length;
   let done = 0;
@@ -131,15 +145,33 @@ export async function generateMessages(leads, { lang = "en" } = {}) {
       try {
         const response = await client.messages.create({
           model: "claude-haiku-4-5-20251001",
-          max_tokens: 300,
-          system: buildSystemPrompt(lead, lang, variant),
+          max_tokens: isEmail ? 500 : 300,
+          system: buildSystemPrompt(lead, lang, variant, resolvedChannel),
           messages: [{ role: "user", content: buildUserPrompt(lead, lang) }],
         });
 
-        const message = response.content[0]?.text?.trim() ?? "";
-        return { ...lead, message, message_variant: variant };
+        const raw = response.content[0]?.text?.trim() ?? "";
+
+        // Email channel: parse JSON {subject, body}
+        if (isEmail) {
+          try {
+            const parsed = JSON.parse(raw);
+            return {
+              ...lead,
+              message: parsed.body ?? raw,
+              email_subject: parsed.subject ?? "",
+              message_variant: variant,
+            };
+          } catch {
+            // JSON parse failed — use raw text as body, empty subject
+            return { ...lead, message: raw, email_subject: "", message_variant: variant };
+          }
+        }
+
+        // WhatsApp channel: plain text message
+        return { ...lead, message: raw, message_variant: variant };
       } catch {
-        return { ...lead, message: "", message_variant: variant };
+        return { ...lead, message: "", email_subject: isEmail ? "" : undefined, message_variant: variant };
       }
     },
     5,
