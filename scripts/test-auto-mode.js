@@ -372,7 +372,7 @@ async function test4_dailyLimit() {
   }
 
   // 4d. Calculate slots remaining
-  const DAILY_LIMIT = 50;
+  const DAILY_LIMIT = 15;
   const slotsLeft = Math.max(0, DAILY_LIMIT - afterCount);
   console.log(`  ℹ️  Slots restantes: ${slotsLeft}`);
 
