@@ -272,20 +272,21 @@ async function processItem(item, { minScore, dry, send, limit }) {
 /**
  * Main autonomous runner.
  *
- * @param {object} opts - { minScore, dry, send, limit, market }
+ * @param {object} opts - { minScore, dry, send, limit, market, externalConfig }
  * @param {string} opts.market - 'BR' | 'US' | 'all' (default 'all')
+ * @param {object} [opts.externalConfig] - { niches, cities, country, lang } from dashboard
  */
-export async function runAuto({ minScore = 3, dry = false, send = false, limit = 20, market = 'all' }) {
+export async function runAuto({ minScore = 3, dry = false, send = false, limit = 20, market = 'all', externalConfig } = {}) {
   const startTime = Date.now();
-  const marketLabel = market === 'all' ? 'BR + US' : market;
+  const marketLabel = externalConfig ? externalConfig.country : (market === 'all' ? 'BR + US' : market);
 
   console.log(`\n🤖  AUTONOMOUS MODE — ${marketLabel}`);
   console.log('━'.repeat(50));
   console.log(`    market: ${marketLabel}  |  min-score: ${minScore}  |  limit/item: ${limit}  |  dry: ${dry}  |  send: ${send}`);
 
-  // Generate queue from Supabase diff (filtered by market)
+  // Generate queue from Supabase diff (filtered by market or external config)
   console.log('\n📋  Generating queue...');
-  const { queue, stats } = await generateQueue({ market });
+  const { queue, stats } = await generateQueue({ market, externalConfig });
 
   console.log(`    Total combos in config:  ${stats.total}`);
   console.log(`    Already prospected:      ${stats.prospected}`);

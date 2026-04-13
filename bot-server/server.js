@@ -3,7 +3,8 @@ import { createServer } from 'node:http'
 import { spawn } from 'node:child_process'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { existsSync } from 'node:fs'
+import { existsSync, writeFileSync, unlinkSync, mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { generateQueue } from '../lib/queue.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -235,8 +236,8 @@ const server = createServer(async (req, res) => {
   }
 
   // Queue API — returns auto-mode queue as JSON
-  // Supports ?market=BR|US|all filter
-  if (req.method === 'GET' && (req.url === '/api/bot/queue' || req.url?.startsWith('/api/bot/queue?'))) {
+  // Accepts GET ?market=BR|US|all (legacy) or POST with { market, niches, cities, lang } from dashboard
+  if ((req.method === 'GET' || req.method === 'POST') && (req.url === '/api/bot/queue' || req.url?.startsWith('/api/bot/queue?'))) {
     const auth = req.headers['authorization'] || ''
     if (BOT_SECRET && auth !== `Bearer ${BOT_SECRET}`) {
       res.writeHead(401, { 'Content-Type': 'application/json' })
@@ -244,16 +245,32 @@ const server = createServer(async (req, res) => {
     }
 
     try {
-      const urlParams = new URL(req.url, `http://localhost:${PORT}`).searchParams
-      const market = urlParams.get('market') || 'all'
-      const { queue, stats } = await generateQueue({ market })
-      // Group queue by country for the UI
+      let market = 'all'
+      let externalConfig
+
+      if (req.method === 'POST') {
+        const body = await parseBody(req)
+        market = body.market || 'all'
+        if (body.niches && body.cities) {
+          externalConfig = {
+            niches: body.niches,
+            cities: body.cities,
+            country: body.market || 'BR',
+            lang: body.lang || 'pt',
+          }
+        }
+      } else {
+        const urlParams = new URL(req.url, `http://localhost:${PORT}`).searchParams
+        market = urlParams.get('market') || 'all'
+      }
+
+      const { queue, stats } = await generateQueue({ market, externalConfig })
       const brItems = queue.filter(i => i.country === 'BR')
       const usItems = queue.filter(i => i.country === 'US')
       res.writeHead(200, { 'Content-Type': 'application/json' })
       return res.end(JSON.stringify({
         stats,
-        queue: queue.slice(0, 100), // first 100 for preview
+        queue: queue.slice(0, 100),
         summary: {
           br: brItems.length,
           us: usItems.length,
@@ -298,6 +315,24 @@ const server = createServer(async (req, res) => {
     if (dryRun) args.push('--dry')
     if (send && !dryRun) args.push('--send')
 
+    // If dashboard sent niches + cities, write to temp file for prospect.js
+    let configTmpPath
+    if (body.niches && body.cities) {
+      try {
+        const tmpDir = mkdtempSync(join(tmpdir(), 'bot-config-'))
+        configTmpPath = join(tmpDir, 'config.json')
+        writeFileSync(configTmpPath, JSON.stringify({
+          niches: body.niches,
+          cities: body.cities,
+          country: body.market || 'BR',
+          lang: body.lang || 'pt',
+        }))
+        args.push('--config', configTmpPath)
+      } catch (err) {
+        console.warn('[bot-server] failed to write temp config:', err.message)
+      }
+    }
+
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
@@ -326,6 +361,10 @@ const server = createServer(async (req, res) => {
     })
 
     child.on('close', (code) => {
+      // Clean up temp config file
+      if (configTmpPath) {
+        try { unlinkSync(configTmpPath) } catch { /* ignore */ }
+      }
       sendEvent(code === 0 ? '✅ Modo autônomo finalizado' : `❌ Encerrou com código ${code}`)
       res.write('data: [DONE]\n\n')
       res.end()

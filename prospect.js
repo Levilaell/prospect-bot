@@ -2,6 +2,7 @@
 
 import 'dotenv/config';
 import { parseArgs } from 'node:util';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import csvWriterPkg from 'csv-writer';
@@ -35,6 +36,7 @@ try {
       send:          { type: 'boolean', default: false },
       auto:          { type: 'boolean', default: false },
       market:        { type: 'string',  default: 'all' },
+      config:        { type: 'string' },
     },
     strict: true,
     allowPositionals: true,
@@ -66,12 +68,24 @@ if (raw.auto) {
                      : raw.market?.toUpperCase() === 'US' ? 'US'
                      : 'all';
 
+  // Load external config from dashboard if provided via --config <path>
+  let externalConfig;
+  if (raw.config) {
+    try {
+      externalConfig = JSON.parse(readFileSync(raw.config, 'utf-8'));
+      console.log(`📂  External config loaded: ${externalConfig.country} — ${externalConfig.niches.length} niches, ${externalConfig.cities.length} cities`);
+    } catch (err) {
+      console.warn(`⚠️  Failed to load config file: ${err.message} — using built-in config`);
+    }
+  }
+
   runAuto({
     minScore: autoMinScore,
     dry:      raw.dry,
     send:     raw.send,
     limit:    autoLimit,
     market,
+    externalConfig,
   }).catch((err) => {
     console.error(`❌  Auto mode fatal: ${err.message}`);
     process.exit(1);
