@@ -13,6 +13,7 @@ import { score }            from './steps/score.js';
 import { generateMessages } from './steps/message.js';
 import { upsertLeads, getClient }                  from './lib/supabase.js';
 import { getAlreadySentPlaceIds, sendToInstantly } from './lib/instantly.js';
+import { setInstances } from './lib/whatsapp.js';
 import { sendWhatsApp }                            from './lib/whatsapp.js';
 import { enrichLeads }                             from './lib/enricher.js';
 import { runAuto }                                 from './steps/auto.js';
@@ -74,6 +75,9 @@ if (raw.auto) {
     try {
       externalConfig = JSON.parse(readFileSync(raw.config, 'utf-8'));
       console.log(`📂  External config loaded: ${externalConfig.country} — ${externalConfig.niches.length} niches, ${externalConfig.cities.length} cities`);
+      if (externalConfig.evolutionInstances && externalConfig.evolutionApiUrl) {
+        setInstances(externalConfig.evolutionInstances, externalConfig.evolutionApiUrl);
+      }
     } catch (err) {
       console.warn(`⚠️  Failed to load config file: ${err.message} — using built-in config`);
     }

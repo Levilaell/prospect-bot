@@ -129,12 +129,17 @@ const server = createServer(async (req, res) => {
       try {
         const tmpDir = mkdtempSync(join(tmpdir(), 'bot-config-'))
         configTmpPath = join(tmpDir, 'config.json')
-        writeFileSync(configTmpPath, JSON.stringify({
+        const configData = {
           niches: body.niches,
           cities: body.cities,
           country: body.market || 'BR',
           lang: body.lang || 'pt',
-        }))
+        }
+        if (body.evolutionInstances && body.evolutionApiUrl) {
+          configData.evolutionInstances = body.evolutionInstances
+          configData.evolutionApiUrl = body.evolutionApiUrl
+        }
+        writeFileSync(configTmpPath, JSON.stringify(configData))
         args.push('--config', configTmpPath)
       } catch (err) {
         console.warn('[bot-server] failed to write temp config:', err.message)
@@ -217,6 +222,22 @@ const server = createServer(async (req, res) => {
     if (dryRun) args.push('--dry')
     if (send && !dryRun) args.push('--send')
 
+    // Pass Evolution instances via temp config file (same pattern as run-auto)
+    let configTmpPath
+    if (body.evolutionInstances && body.evolutionApiUrl) {
+      try {
+        const tmpDir = mkdtempSync(join(tmpdir(), 'bot-config-'))
+        configTmpPath = join(tmpDir, 'config.json')
+        writeFileSync(configTmpPath, JSON.stringify({
+          evolutionInstances: body.evolutionInstances,
+          evolutionApiUrl: body.evolutionApiUrl,
+        }))
+        args.push('--config', configTmpPath)
+      } catch (err) {
+        console.warn('[bot-server] failed to write temp config:', err.message)
+      }
+    }
+
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
@@ -246,6 +267,9 @@ const server = createServer(async (req, res) => {
     })
 
     child.on('close', (code) => {
+      if (configTmpPath) {
+        try { unlinkSync(configTmpPath) } catch { /* ignore */ }
+      }
       sendEvent(code === 0 ? '✅ Bot finalizado com sucesso' : `❌ Bot encerrou com código ${code}`)
       res.write('data: [DONE]\n\n')
       res.end()
