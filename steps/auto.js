@@ -12,7 +12,13 @@ import { enrichLeads }      from '../lib/enricher.js';
 import { sendWhatsApp }     from '../lib/whatsapp.js';
 import { getAlreadySentPlaceIds, sendToInstantly } from '../lib/instantly.js';
 
-const WHATSAPP_DAILY_LIMIT = 15;
+import { getInstances } from '../lib/whatsapp.js';
+
+const WHATSAPP_PER_INSTANCE = 15;
+function getWhatsAppDailyLimit() {
+  const count = getInstances().length;
+  return WHATSAPP_PER_INSTANCE * (count || 1);
+}
 
 /**
  * Runs a single queue item through the full pipeline.
@@ -291,7 +297,8 @@ export async function runAuto({ minScore = 3, dry = false, send = false, limit =
   console.log(`    Total combos in config:  ${stats.total}`);
   console.log(`    Already prospected:      ${stats.prospected}`);
   console.log(`    Remaining in queue:       ${stats.remaining}`);
-  console.log(`    WhatsApp sent today:      ${stats.whatsappSentToday}/${WHATSAPP_DAILY_LIMIT}`);
+  const dailyLimit = getWhatsAppDailyLimit();
+  console.log(`    WhatsApp sent today:      ${stats.whatsappSentToday}/${dailyLimit}`);
   console.log(`    WhatsApp slots left:      ${stats.whatsappSlotsLeft}`);
 
   if (queue.length === 0) {
@@ -325,8 +332,9 @@ export async function runAuto({ minScore = 3, dry = false, send = false, limit =
     // Check WhatsApp daily limit before each PT item
     if (send && item.lang === 'pt') {
       const sentToday = await getWhatsAppSentToday();
-      if (sentToday >= WHATSAPP_DAILY_LIMIT) {
-        console.log(`\n⚠️  WhatsApp daily limit reached (${WHATSAPP_DAILY_LIMIT}) — stopping auto mode.`);
+      const dailyLim = getWhatsAppDailyLimit();
+      if (sentToday >= dailyLim) {
+        console.log(`\n⚠️  WhatsApp daily limit reached (${dailyLim}) — stopping auto mode.`);
         break;
       }
     }
