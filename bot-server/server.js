@@ -5,6 +5,7 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { existsSync, writeFileSync, unlinkSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
+import { randomUUID } from 'node:crypto'
 import { generateQueue } from '../lib/queue.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -32,6 +33,48 @@ function parseBody(req) {
   })
 }
 
+// ── Active runs — in-memory store for background processes ──────────────────
+
+const activeRuns = new Map()
+const MAX_COMPLETED_RUNS = 5
+
+function cleanupOldRuns() {
+  const completed = [...activeRuns.entries()]
+    .filter(([, r]) => r.status !== 'running')
+    .sort((a, b) => b[1].endedAt - a[1].endedAt)
+  // Keep only the last MAX_COMPLETED_RUNS completed runs
+  for (const [id] of completed.slice(MAX_COMPLETED_RUNS)) {
+    activeRuns.delete(id)
+  }
+}
+
+function extractStats(logs) {
+  let collected = 0, qualified = 0, sent = 0
+  for (const line of logs) {
+    const cm = line.match(/(\d+)\s*collected/)
+    if (cm) collected = parseInt(cm[1])
+    const qm = line.match(/(\d+)\s*qualified/)
+    if (qm) qualified = parseInt(qm[1])
+    const sm = line.match(/(\d+)\s*sent/)
+    if (sm) sent = parseInt(sm[1])
+  }
+  return { collected, qualified, sent }
+}
+
+// ── Auth helper ──────────────────────────────────────────────────────────────
+
+function checkAuth(req, res) {
+  const auth = req.headers['authorization'] || ''
+  if (BOT_SECRET && auth !== `Bearer ${BOT_SECRET}`) {
+    res.writeHead(401, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ error: 'Unauthorized' }))
+    return false
+  }
+  return true
+}
+
+// ── Server ───────────────────────────────────────────────────────────────────
+
 const server = createServer(async (req, res) => {
   // CORS
   res.setHeader('Access-Control-Allow-Origin', '*')
@@ -46,17 +89,12 @@ const server = createServer(async (req, res) => {
   // Health check
   if (req.method === 'GET' && req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' })
-    return res.end(JSON.stringify({ ok: true, version: '1.0.0' }))
+    return res.end(JSON.stringify({ ok: true, version: '2.0.0' }))
   }
 
   // Queue API — returns auto-mode queue as JSON
-  // Accepts GET ?market=BR|US|all (legacy) or POST with { market, niches, cities, lang } from dashboard
   if ((req.method === 'GET' || req.method === 'POST') && (req.url === '/api/bot/queue' || req.url?.startsWith('/api/bot/queue?'))) {
-    const auth = req.headers['authorization'] || ''
-    if (BOT_SECRET && auth !== `Bearer ${BOT_SECRET}`) {
-      res.writeHead(401, { 'Content-Type': 'application/json' })
-      return res.end(JSON.stringify({ error: 'Unauthorized' }))
-    }
+    if (!checkAuth(req, res)) return
 
     try {
       let market = 'all'
@@ -97,12 +135,16 @@ const server = createServer(async (req, res) => {
     }
   }
 
-  // Run auto mode
+  // ── Run auto mode (fire-and-forget) ──────────────────────────────────────
+
   if (req.method === 'POST' && req.url === '/run-auto') {
-    const auth = req.headers['authorization'] || ''
-    if (BOT_SECRET && auth !== `Bearer ${BOT_SECRET}`) {
-      res.writeHead(401)
-      return res.end('Unauthorized')
+    if (!checkAuth(req, res)) return
+
+    // Check if there's already a running process
+    const alreadyRunning = [...activeRuns.values()].find(r => r.status === 'running')
+    if (alreadyRunning) {
+      res.writeHead(409, { 'Content-Type': 'application/json' })
+      return res.end(JSON.stringify({ error: 'A run is already in progress', runId: alreadyRunning.id }))
     }
 
     const body = await parseBody(req)
@@ -123,7 +165,7 @@ const server = createServer(async (req, res) => {
     if (dryRun) args.push('--dry')
     if (send && !dryRun) args.push('--send')
 
-    // If dashboard sent niches + cities, write to temp file for prospect.js
+    // Write temp config file with niches, cities, and Evolution instances
     let configTmpPath
     if (body.niches && body.cities) {
       try {
@@ -146,54 +188,120 @@ const server = createServer(async (req, res) => {
       }
     }
 
-    res.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
-    })
-
-    const sendEvent = (data) => {
-      res.write(`data: ${JSON.stringify({ line: data })}\n\n`)
+    const runId = randomUUID()
+    const run = {
+      id: runId,
+      status: 'running',
+      logs: ['🤖 Iniciando modo autônomo...'],
+      startedAt: Date.now(),
+      endedAt: null,
+      configTmpPath,
     }
-
-    sendEvent('🤖 Iniciando modo autônomo...')
+    activeRuns.set(runId, run)
 
     const child = spawn('node', args, {
       env: { ...process.env },
       cwd: join(__dirname, '..'),
     })
+    run.process = child
 
     child.stdout.on('data', (data) => {
       const lines = data.toString().split('\n').filter(l => l.trim())
-      lines.forEach(line => sendEvent(line))
+      run.logs.push(...lines)
     })
 
     child.stderr.on('data', (data) => {
       const lines = data.toString().split('\n').filter(l => l.trim())
-      lines.forEach(line => sendEvent(`⚠️ ${line}`))
+      run.logs.push(...lines.map(l => `⚠️ ${l}`))
     })
 
     child.on('close', (code) => {
-      // Clean up temp config file
       if (configTmpPath) {
         try { unlinkSync(configTmpPath) } catch { /* ignore */ }
       }
-      sendEvent(code === 0 ? '✅ Modo autônomo finalizado' : `❌ Encerrou com código ${code}`)
-      res.write('data: [DONE]\n\n')
-      res.end()
+      run.logs.push(code === 0 ? '✅ Modo autônomo finalizado' : `❌ Encerrou com código ${code}`)
+      run.status = code === 0 ? 'completed' : 'failed'
+      run.endedAt = Date.now()
+      run.process = null
+      console.log(`[bot-server] run ${runId} finished with code ${code}`)
+      cleanupOldRuns()
     })
 
-    req.on('close', () => { if (!child.killed) child.kill() })
-    return
+    console.log(`[bot-server] started run ${runId}`)
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    return res.end(JSON.stringify({ runId }))
   }
 
-  // Run bot (manual)
-  if (req.method === 'POST' && req.url === '/run') {
-    const auth = req.headers['authorization'] || ''
-    if (BOT_SECRET && auth !== `Bearer ${BOT_SECRET}`) {
-      res.writeHead(401)
-      return res.end('Unauthorized')
+  // ── Run status (polling) ─────────────────────────────────────────────────
+
+  if (req.method === 'GET' && req.url?.startsWith('/run-status')) {
+    if (!checkAuth(req, res)) return
+
+    const urlParams = new URL(req.url, `http://localhost:${PORT}`).searchParams
+    const runId = urlParams.get('runId')
+    const offset = parseInt(urlParams.get('offset') ?? '0', 10)
+
+    // If no runId, check for any active run
+    const run = runId
+      ? activeRuns.get(runId)
+      : [...activeRuns.values()].find(r => r.status === 'running')
+
+    if (!run) {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      return res.end(JSON.stringify({ status: 'not_found', logs: [], totalLines: 0, stats: {} }))
     }
+
+    const newLogs = run.logs.slice(offset)
+    const stats = extractStats(run.logs)
+    const durationSeconds = run.endedAt
+      ? Math.round((run.endedAt - run.startedAt) / 1000)
+      : Math.round((Date.now() - run.startedAt) / 1000)
+
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    return res.end(JSON.stringify({
+      runId: run.id,
+      status: run.status,
+      logs: newLogs,
+      totalLines: run.logs.length,
+      stats,
+      durationSeconds,
+    }))
+  }
+
+  // ── Cancel run ───────────────────────────────────────────────────────────
+
+  if (req.method === 'POST' && req.url === '/cancel') {
+    if (!checkAuth(req, res)) return
+
+    const body = await parseBody(req)
+    const runId = body.runId
+
+    const run = runId
+      ? activeRuns.get(runId)
+      : [...activeRuns.values()].find(r => r.status === 'running')
+
+    if (!run || run.status !== 'running') {
+      res.writeHead(404, { 'Content-Type': 'application/json' })
+      return res.end(JSON.stringify({ error: 'No running process found' }))
+    }
+
+    if (run.process && !run.process.killed) {
+      run.process.kill()
+    }
+    run.status = 'cancelled'
+    run.endedAt = Date.now()
+    run.logs.push('🛑 Execução cancelada pelo usuário')
+    run.process = null
+
+    console.log(`[bot-server] run ${run.id} cancelled`)
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    return res.end(JSON.stringify({ ok: true }))
+  }
+
+  // ── Run bot (manual) — keeps SSE for short runs ──────────────────────────
+
+  if (req.method === 'POST' && req.url === '/run') {
+    if (!checkAuth(req, res)) return
 
     const body = await parseBody(req)
     const niche       = body.niche
@@ -222,7 +330,6 @@ const server = createServer(async (req, res) => {
     if (dryRun) args.push('--dry')
     if (send && !dryRun) args.push('--send')
 
-    // Pass Evolution instances via temp config file (same pattern as run-auto)
     let configTmpPath
     if (body.evolutionInstances && body.evolutionApiUrl) {
       try {
