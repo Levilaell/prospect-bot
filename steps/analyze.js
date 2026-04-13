@@ -9,6 +9,7 @@ const SCRAPE_DEFAULTS = {
   is_mobile_friendly: false,
   has_pixel:          false,
   has_analytics:      false,
+  has_google_ads:     false,
   has_whatsapp:       false,
   has_form:           false,
   has_booking:        false,

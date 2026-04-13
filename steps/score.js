@@ -26,8 +26,10 @@ function scoreLead(lead, country) {
   if (lead.visual_score !== null && lead.visual_score !== undefined) {
     if (lead.visual_score < 4) {
       reasons.push('outdated_design');      points += 3;
+    } else if (lead.visual_score <= 5) {
+      reasons.push('poor_visual_quality');  points += 2;
     } else if (lead.visual_score <= 6) {
-      reasons.push('poor_visual_quality');  points += 3;
+      reasons.push('mediocre_design');      points += 1;
     }
   }
 
