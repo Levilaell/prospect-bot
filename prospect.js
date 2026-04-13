@@ -38,6 +38,7 @@ try {
       auto:          { type: 'boolean', default: false },
       market:        { type: 'string',  default: 'all' },
       config:        { type: 'string' },
+      'max-send':    { type: 'string' },
     },
     strict: true,
     allowPositionals: true,
@@ -83,6 +84,8 @@ if (raw.auto) {
     }
   }
 
+  const maxSend = raw['max-send'] ? parseInt(raw['max-send'], 10) : undefined;
+
   runAuto({
     minScore: autoMinScore,
     dry:      raw.dry,
@@ -90,6 +93,7 @@ if (raw.auto) {
     limit:    autoLimit,
     market,
     externalConfig,
+    maxSend,
   }).catch((err) => {
     console.error(`❌  Auto mode fatal: ${err.message}`);
     process.exit(1);

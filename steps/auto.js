@@ -24,7 +24,7 @@ function getWhatsAppDailyLimit() {
  * Runs a single queue item through the full pipeline.
  * Returns { collected, qualified, sent } counts.
  */
-async function processItem(item, { minScore, dry, send, limit }) {
+async function processItem(item, { minScore, dry, send, limit, maxSend, totalSentSoFar = 0 }) {
   const { niche, searchCity, lang, country = lang === 'pt' ? 'BR' : 'US' } = item;
   const channel = lang === 'pt' ? 'whatsapp' : 'email';
   const tag = `[${niche} | ${searchCity}]`;
@@ -230,7 +230,8 @@ async function processItem(item, { minScore, dry, send, limit }) {
         try {
           const alreadySent = await getAlreadySentPlaceIds(forWA.map((l) => l.place_id));
           const toSend = forWA.filter((l) => !alreadySent.has(l.place_id));
-          const { sent } = await sendWhatsApp(toSend);
+          const remaining = maxSend ? maxSend - totalSentSoFar : undefined;
+          const { sent, maxSendReached } = await sendWhatsApp(toSend, { maxSend: remaining });
           sentCount += sent;
         } catch (err) {
           console.warn(`⚠️  ${tag} WhatsApp send failed: ${err.message}`);
@@ -272,23 +273,24 @@ async function processItem(item, { minScore, dry, send, limit }) {
     }
   }
 
-  return { collected: totalCollected, qualified: allQualified.length, sent: sentCount };
+  return { collected: totalCollected, qualified: allQualified.length, sent: sentCount, maxSendReached: !!maxSendReached };
 }
 
 /**
  * Main autonomous runner.
  *
- * @param {object} opts - { minScore, dry, send, limit, market, externalConfig }
+ * @param {object} opts - { minScore, dry, send, limit, market, externalConfig, maxSend }
  * @param {string} opts.market - 'BR' | 'US' | 'all' (default 'all')
  * @param {object} [opts.externalConfig] - { niches, cities, country, lang } from dashboard
+ * @param {number} [opts.maxSend] - max messages to send this execution (stops cleanly when reached)
  */
-export async function runAuto({ minScore = 3, dry = false, send = false, limit = 20, market = 'all', externalConfig } = {}) {
+export async function runAuto({ minScore = 3, dry = false, send = false, limit = 20, market = 'all', externalConfig, maxSend } = {}) {
   const startTime = Date.now();
   const marketLabel = externalConfig ? externalConfig.country : (market === 'all' ? 'BR + US' : market);
 
   console.log(`\n🤖  AUTONOMOUS MODE — ${marketLabel}`);
   console.log('━'.repeat(50));
-  console.log(`    market: ${marketLabel}  |  min-score: ${minScore}  |  limit/item: ${limit}  |  dry: ${dry}  |  send: ${send}`);
+  console.log(`    market: ${marketLabel}  |  min-score: ${minScore}  |  limit/item: ${limit}  |  dry: ${dry}  |  send: ${send}${maxSend ? `  |  max-send: ${maxSend}` : ''}`);
 
   // Generate queue from Supabase diff (filtered by market or external config)
   console.log('\n📋  Generating queue...');
@@ -343,10 +345,15 @@ export async function runAuto({ minScore = 3, dry = false, send = false, limit =
     console.log(`\n${'═'.repeat(50)}`);
     console.log(`📌  Queue item ${processed}/${queue.length}`);
 
-    const result = await processItem(item, { minScore, dry, send, limit });
+    const result = await processItem(item, { minScore, dry, send, limit, maxSend, totalSentSoFar: totalSent });
     totalCollected += result.collected;
     totalQualified += result.qualified;
     totalSent      += result.sent;
+
+    if (maxSend && totalSent >= maxSend) {
+      console.log(`\n⛔  --max-send ${maxSend} reached — stopping auto mode.`);
+      break;
+    }
   }
 
   // Summary

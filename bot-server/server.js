@@ -153,6 +153,7 @@ const server = createServer(async (req, res) => {
     const dryRun   = body.dry_run ?? false
     const send     = body.send ?? false
     const market   = body.market ?? 'all'
+    const maxSend  = body.max_send
 
     const args = [
       prospectPath,
@@ -164,6 +165,7 @@ const server = createServer(async (req, res) => {
     ]
     if (dryRun) args.push('--dry')
     if (send && !dryRun) args.push('--send')
+    if (maxSend) args.push('--max-send', String(maxSend))
 
     // Write temp config file with niches, cities, and Evolution instances
     let configTmpPath

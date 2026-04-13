@@ -65,6 +65,7 @@ node prospect.js --niche "dentists" --city "Miami, FL" --limit 50 --export both 
 | `--min-score` | number | `3` | Minimum `pain_score` required to include a lead in the export |
 | `--dry` | boolean flag | `false` | Skip message generation and export; only collect + analyze + score |
 | `--send` | boolean flag | `false` | After export, push qualified leads to Instantly campaign |
+| `--max-send` | number | *(no limit)* | Maximum messages to send this execution — stops cleanly when reached; remaining leads stay queued |
 
 ---
 
