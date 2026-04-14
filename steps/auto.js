@@ -219,6 +219,7 @@ async function processItem(item, { minScore, dry, send, limit, maxSend, totalSen
 
   // 6. Send outreach (if --send)
   let sentCount = 0;
+  let maxSendReached = false;
   if (send) {
     // Enrich emails
     withMessages = await enrichLeads(withMessages, { country });
@@ -231,8 +232,9 @@ async function processItem(item, { minScore, dry, send, limit, maxSend, totalSen
           const alreadySent = await getAlreadySentPlaceIds(forWA.map((l) => l.place_id));
           const toSend = forWA.filter((l) => !alreadySent.has(l.place_id));
           const remaining = maxSend ? maxSend - totalSentSoFar : undefined;
-          const { sent, maxSendReached } = await sendWhatsApp(toSend, { maxSend: remaining });
-          sentCount += sent;
+          const result = await sendWhatsApp(toSend, { maxSend: remaining });
+          sentCount += result.sent;
+          maxSendReached = !!result.maxSendReached;
         } catch (err) {
           console.warn(`⚠️  ${tag} WhatsApp send failed: ${err.message}`);
         }
@@ -273,7 +275,7 @@ async function processItem(item, { minScore, dry, send, limit, maxSend, totalSen
     }
   }
 
-  return { collected: totalCollected, qualified: allQualified.length, sent: sentCount, maxSendReached: !!maxSendReached };
+  return { collected: totalCollected, qualified: allQualified.length, sent: sentCount, maxSendReached };
 }
 
 /**
