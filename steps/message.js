@@ -29,6 +29,12 @@ function businessSizeLabelPt(reviewCount) {
   return 'popular (bem conhecido na região)';
 }
 
+// ── Clean business name (strip SEO descriptors) ────────────────────────────
+
+function cleanBusinessName(name) {
+  return name.split(/[|–—·]|  +/)[0].trim();
+}
+
 // ── User prompt builder ──────────────────────────────────────────────────────
 
 function buildUserPrompt(lead, lang) {
@@ -39,7 +45,7 @@ function buildUserPrompt(lead, lang) {
     : businessSizeLabel(lead.review_count);
 
   const lines = [
-    `Business name: ${lead.business_name}`,
+    `Business name: ${cleanBusinessName(lead.business_name)}`,
     `Niche: ${lead.niche ?? "local business"}`,
     `City: ${lead.city}`,
   ];
