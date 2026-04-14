@@ -1,7 +1,7 @@
 // Autonomous runner — processes the queue item by item,
 // respecting WhatsApp daily cap and stopping when done.
 
-import { generateQueue, getWhatsAppSentToday } from '../lib/queue.js';
+import { generateQueue } from '../lib/queue.js';
 import { collect }          from './collect.js';
 import { analyze }          from './analyze.js';
 import { visualAnalysis }   from './visual.js';
@@ -11,14 +11,6 @@ import { upsertLeads, getClient } from '../lib/supabase.js';
 import { enrichLeads }      from '../lib/enricher.js';
 import { sendWhatsApp }     from '../lib/whatsapp.js';
 import { getAlreadySentPlaceIds, sendToInstantly } from '../lib/instantly.js';
-
-import { getInstances } from '../lib/whatsapp.js';
-
-const WHATSAPP_PER_INSTANCE = 15;
-function getWhatsAppDailyLimit() {
-  const count = getInstances().length;
-  return WHATSAPP_PER_INSTANCE * (count || 1);
-}
 
 /**
  * Runs a single queue item through the full pipeline.
@@ -301,9 +293,7 @@ export async function runAuto({ minScore = 3, dry = false, send = false, limit =
   console.log(`    Total combos in config:  ${stats.total}`);
   console.log(`    Already prospected:      ${stats.prospected}`);
   console.log(`    Remaining in queue:       ${stats.remaining}`);
-  const dailyLimit = getWhatsAppDailyLimit();
-  console.log(`    WhatsApp sent today:      ${stats.whatsappSentToday}/${dailyLimit}`);
-  console.log(`    WhatsApp slots left:      ${stats.whatsappSlotsLeft}`);
+  console.log(`    WhatsApp sent today:      ${stats.whatsappSentToday}`);
 
   if (queue.length === 0) {
     console.log('\n✅  Queue is empty — all combos have been prospected.');
@@ -333,16 +323,6 @@ export async function runAuto({ minScore = 3, dry = false, send = false, limit =
   let processed      = 0;
 
   for (const item of queue) {
-    // Check WhatsApp daily limit before each PT item
-    if (send && item.lang === 'pt') {
-      const sentToday = await getWhatsAppSentToday();
-      const dailyLim = getWhatsAppDailyLimit();
-      if (sentToday >= dailyLim) {
-        console.log(`\n⚠️  WhatsApp daily limit reached (${dailyLim}) — stopping auto mode.`);
-        break;
-      }
-    }
-
     processed++;
     console.log(`\n${'═'.repeat(50)}`);
     console.log(`📌  Queue item ${processed}/${queue.length}`);
