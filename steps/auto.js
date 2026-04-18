@@ -149,9 +149,24 @@ async function processItem(item, { minScore, dry, send, limit, maxSend, totalSen
       console.warn(`⚠️  ${tag} score failed: ${err.message}`);
     }
 
-    qualified = leads.filter((l) => (l.pain_score ?? 0) >= minScore);
-    const disqualified = leads.filter((l) => (l.pain_score ?? 0) < minScore);
-    console.log(`🎯  ${tag} Qualified: ${qualified.length}/${leads.length} with-website leads (score >= ${minScore})`);
+    // Qualification requires BOTH sufficient pain AND a tracking signal
+    // (opportunity_score >= 1 → lead has review_count >= 80 or rating >= 4.3).
+    // minScore is CLI-controlled; the opportunity threshold is hardcoded for now.
+    qualified = leads.filter((l) =>
+      (l.pain_score ?? 0) >= minScore && (l.opportunity_score ?? 0) >= 1,
+    );
+    const disqualifiedByPain = leads.filter((l) => (l.pain_score ?? 0) < minScore);
+    const disqualifiedByOpportunity = leads.filter(
+      (l) => (l.pain_score ?? 0) >= minScore && (l.opportunity_score ?? 0) < 1,
+    );
+    const disqualified = [...disqualifiedByPain, ...disqualifiedByOpportunity];
+    console.log(`🎯  ${tag} Qualified: ${qualified.length}/${leads.length} with-website leads (pain >= ${minScore}, opportunity >= 1)`);
+    if (disqualifiedByPain.length > 0) {
+      console.log(`    ${tag} Disqualified ${disqualifiedByPain.length} by pain_score < ${minScore}`);
+    }
+    if (disqualifiedByOpportunity.length > 0) {
+      console.log(`    ${tag} Disqualified ${disqualifiedByOpportunity.length} by opportunity_score < 1 (no tracking signal)`);
+    }
 
     if (disqualified.length > 0) {
       const minimal = disqualified.map(l => ({

@@ -32,10 +32,43 @@ function businessSizeLabelPt(reviewCount) {
   return "popular (bem conhecido na região)";
 }
 
-// ── Clean business name (strip SEO descriptors) ──────────────────────────────
+// ── Clean business name (strip SEO descriptors + geographic suffixes) ────────
+
+// Strong visual-signal keywords → mainReason gets bumped to 'visual_broken'.
+// Used by pickMainReason + findStrongVisualNote below.
+const STRONG_VISUAL_KEYWORDS = [
+  'broken', 'unfinished', 'placeholder', 'rev_slider',
+  'código', 'codigo', 'error', 'erro',
+  '[', '__', 'undefined', 'null', 'lorem ipsum',
+];
 
 function cleanBusinessName(name) {
-  return name.split(/[|–—·]|  +/)[0].trim();
+  let s = name.split(/[|–—·]|  +/)[0].trim();
+
+  // Strip trailing geographic suffixes. Idempotent on second call — if nothing matches, returns unchanged.
+  s = s
+    // " em Cidade" or " em Cidade/UF" at end
+    .replace(/\s+em\s+[A-ZÀ-ÿ][\wÀ-ÿ\s]*?(?:\/[A-Za-z]{2})?\s*$/i, '')
+    // " - Cidade" or " - Cidade/UF" at end (regular hyphen with spaces)
+    .replace(/\s+-\s+[A-ZÀ-ÿ][\wÀ-ÿ\s]*?(?:\/[A-Za-z]{2})?\s*$/i, '')
+    // ", Cidade/UF" at end
+    .replace(/\s*,\s*[A-ZÀ-ÿ][\wÀ-ÿ\s]*?\/[A-Za-z]{2}\s*$/i, '')
+    // "Cidade/UF" as trailing suffix (single capitalized word — multi-word cities
+    // without a separator are ambiguous vs. business name and left untouched)
+    .replace(/\s+[A-ZÀ-ÿ][\wÀ-ÿ]*\/[A-Za-z]{2}\s*$/, '')
+    .trim();
+
+  return s;
+}
+
+function findStrongVisualNote(visualNotes) {
+  if (!Array.isArray(visualNotes) || visualNotes.length === 0) return null;
+  for (const note of visualNotes) {
+    if (typeof note !== 'string') continue;
+    const lower = note.toLowerCase();
+    if (STRONG_VISUAL_KEYWORDS.some((kw) => lower.includes(kw))) return note;
+  }
+  return null;
 }
 
 // ── Pick main reason (single dominant pain only) ─────────────────────────────
@@ -44,6 +77,11 @@ function pickMainReason(lead) {
   const reasons = lead.score_reasons ?? [];
 
   if (lead.no_website) return "no_website";
+
+  // Strong visual signals (broken/unfinished/placeholder code) beat everything else:
+  // a concrete finding is a better hook than a generic pain signal.
+  if (findStrongVisualNote(lead.visual_notes)) return "visual_broken";
+
   if (reasons.includes("no_booking")) return "no_booking";
   if (reasons.includes("no_whatsapp")) return "no_whatsapp";
   if (reasons.includes("no_form")) return "no_contact";
@@ -66,6 +104,7 @@ function getMainReasonDescription(reason, lang, lead) {
       slow_mobile: "o site é lento no celular",
       poor_visual:
         "a primeira impressão visual no celular passa pouca confiança",
+      visual_broken: "há problemas visíveis de implementação no site",
       outdated_builder: techStack
         ? `o site parece limitado pela plataforma ${techStack}`
         : "o site parece preso em uma plataforma limitada",
@@ -81,6 +120,7 @@ function getMainReasonDescription(reason, lang, lead) {
       no_contact: "there is no simple contact path on the site",
       slow_mobile: "the site is slow on mobile",
       poor_visual: "the mobile first impression looks weak and hurts trust",
+      visual_broken: "there are visible implementation issues on the site",
       outdated_builder: techStack
         ? `the site feels limited by the ${techStack} platform`
         : "the site feels limited by its current platform",
@@ -110,6 +150,8 @@ function getMainReasonContext(reason, lang) {
         "Contexto: a maior parte dos acessos vem do celular e páginas lentas fazem a pessoa desistir.",
       poor_visual:
         "Contexto: a primeira impressão visual influencia confiança antes mesmo da pessoa ler qualquer coisa.",
+      visual_broken:
+        "Contexto: elementos quebrados ou inacabados no site passam imagem de amadorismo e afastam cliente antes de converter.",
       outdated_builder:
         "Contexto: uma estrutura limitada costuma passar imagem de negócio parado ou desatualizado.",
       no_ssl:
@@ -132,6 +174,8 @@ function getMainReasonContext(reason, lang) {
         "Context: most traffic is mobile, and slow pages make people drop off fast.",
       poor_visual:
         "Context: first visual impression affects trust before people read anything.",
+      visual_broken:
+        "Context: broken or unfinished elements on the site create an amateur impression and scare off visitors.",
       outdated_builder:
         "Context: a limited platform often makes the business look outdated or stagnant.",
       no_ssl: "Context: any sense of insecurity hurts trust immediately.",
@@ -160,11 +204,29 @@ function buildUserPrompt(lead, lang) {
     `Business name: ${cleanBusinessName(lead.business_name)}`,
     `Niche: ${lead.niche ?? "local business"}`,
     `City: ${lead.city}`,
-    `Main problem: ${getMainReasonDescription(mainReason, lang, lead)}`,
-    getMainReasonContext(mainReason, lang),
   ];
 
-  if (lead.rating != null) {
+  // Highlight real traction when review_count is credible proof — teaches the model
+  // to open with review_count + rating instead of vague pain claims.
+  const reviewCount = lead.review_count ?? 0;
+  if (reviewCount >= 80 && lead.rating != null) {
+    if (lang === "pt") {
+      lines.push(
+        `TRAÇÃO REAL: este negócio tem ${reviewCount} avaliações ${lead.rating} estrelas — use isso como prova de que eles têm clientes e reputação.`,
+      );
+    } else {
+      lines.push(
+        `REAL TRACTION: this business has ${reviewCount} reviews averaging ${lead.rating} stars — use this as proof they have traffic and reputation.`,
+      );
+    }
+  }
+
+  lines.push(
+    `Main problem: ${getMainReasonDescription(mainReason, lang, lead)}`,
+    getMainReasonContext(mainReason, lang),
+  );
+
+  if (lead.rating != null && reviewCount < 80) {
     lines.push(
       `Google rating: ${lead.rating}/5 (${lead.review_count ?? 0} reviews)`,
     );
@@ -186,6 +248,13 @@ function buildUserPrompt(lead, lang) {
       );
     }
   } else {
+    if (mainReason === "visual_broken") {
+      const note = findStrongVisualNote(lead.visual_notes);
+      if (note) {
+        lines.push(`Visual issue to base the message on:\n- ${note}`);
+      }
+    }
+
     if (mainReason === "poor_visual") {
       if (Array.isArray(lead.visual_notes) && lead.visual_notes.length > 0) {
         lines.push(
