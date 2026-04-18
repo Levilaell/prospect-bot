@@ -257,8 +257,10 @@ async function processItem(item, { minScore, dry, send, limit, maxSend, totalSen
           const alreadySent = await getAlreadySentPlaceIds(forEmail.map((l) => l.place_id));
           const toSend = forEmail.filter((l) => !alreadySent.has(l.place_id));
           if (toSend.length > 0) {
-            const { sent } = await sendToInstantly(toSend);
-            sentCount += sent;
+            const remaining = maxSend ? maxSend - totalSentSoFar : undefined;
+            const result = await sendToInstantly(toSend, { maxSend: remaining });
+            sentCount += result.sent;
+            maxSendReached = !!result.maxSendReached;
           }
         } catch (err) {
           console.warn(`⚠️  ${tag} Instantly send failed: ${err.message}`);
