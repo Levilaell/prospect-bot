@@ -17,6 +17,7 @@ import { setInstances } from './lib/whatsapp.js';
 import { sendWhatsApp }                            from './lib/whatsapp.js';
 import { enrichLeads }                             from './lib/enricher.js';
 import { runAuto }                                 from './steps/auto.js';
+import { validateCrmEnv }                          from './lib/crm-client.js';
 
 const { createObjectCsvWriter } = csvWriterPkg;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -86,6 +87,12 @@ if (raw.auto) {
 
   const maxSend = raw['max-send'] ? parseInt(raw['max-send'], 10) : undefined;
 
+  // CRM client is required whenever we might actually send, so fail fast on
+  // missing shared-secret / base URL.
+  if (raw.send) {
+    try { validateCrmEnv(); } catch (err) { fatal(err.message); }
+  }
+
   runAuto({
     minScore: autoMinScore,
     dry:      raw.dry,
@@ -147,6 +154,7 @@ if (send && !dry) {
   if (lang === 'pt' && !process.env.HUNTER_API_KEY) {
     console.warn('⚠️   HUNTER_API_KEY not set — email enrichment will rely on scraping only');
   }
+  try { validateCrmEnv(); } catch (err) { fatal(err.message); }
 }
 
 const country = lang === 'pt' ? 'BR' : 'US';
@@ -520,22 +528,9 @@ async function main() {
       }
     }
 
-    // 6c. Pending — mark in Supabase, no send
-    if (pending.length > 0) {
-      try {
-        const client = getClient();
-        await client
-          .from('leads')
-          .upsert(
-            pending.map((l) => ({ place_id: l.place_id, outreach_channel: 'pending' })),
-            { onConflict: 'place_id' },
-          );
-        // Stamp in-memory so CSV reflects it
-        for (const l of pending) l.outreach_channel = 'pending';
-      } catch (err) {
-        console.warn(`⚠️   Could not mark pending leads in Supabase: ${err.message}`);
-      }
-    }
+    // Leads with no usable channel (pending) are no longer persisted from here —
+    // post-dispatch writes are owned by the CRM. `result.pending` still reports
+    // the count for the run summary.
 
     sendResult = result;
   }

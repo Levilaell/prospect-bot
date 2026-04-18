@@ -249,23 +249,9 @@ async function processItem(item, { minScore, dry, send, limit, maxSend, totalSen
     }
   }
 
-  // 7. Update status to 'sent' for leads that were actually sent
-  if (sentCount > 0) {
-    try {
-      const client = getClient();
-      const sentIds = withMessages
-        .filter(l => l.outreach_sent === true)
-        .map(l => l.place_id);
-      if (sentIds.length > 0) {
-        await client.from('leads')
-          .update({ status: 'sent', status_updated_at: new Date().toISOString() })
-          .in('place_id', sentIds)
-          .eq('status', 'prospected');
-      }
-    } catch (err) {
-      console.warn(`⚠️  ${tag} status update to 'sent' failed: ${err.message}`);
-    }
-  }
+  // Status transition (prospected → sent) is now owned by the CRM — each
+  // successful send posts to /api/bot/outreach/sent and the CRM updates the
+  // lead row there. Nothing to do here.
 
   return { collected: totalCollected, qualified: allQualified.length, sent: sentCount, maxSendReached };
 }
