@@ -229,7 +229,7 @@ async function processItem(item, { minScore, dry, send, limit, maxSend, totalSen
   let maxSendReached = false;
   if (send) {
     // Enrich emails
-    withMessages = await enrichLeads(withMessages, { country });
+    if (country === 'US') withMessages = await enrichLeads(withMessages);
 
     if (lang === 'pt') {
       // WhatsApp — BR leads with phone

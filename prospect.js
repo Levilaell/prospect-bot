@@ -454,7 +454,7 @@ async function main() {
 
   if (send) {
     console.log(`\n🔎  Enriching ${withMessages.length} leads with email...`);
-    withMessages = await enrichLeads(withMessages, { country });
+    if (country === 'US') withMessages = await enrichLeads(withMessages);
 
     forWhatsApp  = withMessages.filter((l) => lang === 'pt' && l.phone);
     forInstantly = withMessages.filter((l) => lang !== 'pt' && l.email);
