@@ -10,3 +10,10 @@ output/*.csv
 # OS
 .DS_Store
 Thumbs.db
+
+# Internal docs / PR drafts (not versioned)
+AUDIT-REPORT.md
+PR-*.md
+PR1-*.md
+PR2-*.md
+RESUMO-*.md
