@@ -29,6 +29,9 @@ async function processItem(item, { minScore, dry, send, limit, maxSend, totalSen
     const result = await collect({ niche, city: searchCity, limit, searchCity });
     leads = result.leads;
     noWebsiteLeads = result.noWebsiteLeads;
+    // Stamp country on every lead before any persistence (Bot-A2 fix)
+    leads = leads.map(l => ({ ...l, country }));
+    noWebsiteLeads = noWebsiteLeads.map(l => ({ ...l, country }));
   } catch (err) {
     console.warn(`⚠️  ${tag} collect failed: ${err.message}`);
     return { collected: 0, qualified: 0, sent: 0 };
