@@ -161,7 +161,6 @@ const server = createServer(async (req, res) => {
       '--market', String(market),
       '--limit', String(limit),
       '--min-score', String(minScore),
-      '--export', 'supabase',
     ]
     if (dryRun) args.push('--dry')
     if (send && !dryRun) args.push('--send')
