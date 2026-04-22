@@ -62,8 +62,13 @@ async function fetchDetails(placeId, apiKey) {
     open_now:     Boolean(oh.open_now),
   } : null;
 
-  const reviews = Array.isArray(result.reviews) && result.reviews.length > 0
-    ? result.reviews.slice(0, 3).map((r) => ({
+  // Filtrar reviews curtas (<80 chars) antes do slice — reviews tipo "Top!" ou
+  // "Muito bom" não agregam valor no site e poluem a seção Depoimentos.
+  const reviewsFiltered = Array.isArray(result.reviews)
+    ? result.reviews.filter((r) => r.text && r.text.trim().length >= 80)
+    : [];
+  const reviews = reviewsFiltered.length > 0
+    ? reviewsFiltered.slice(0, 3).map((r) => ({
         author_name:               r.author_name ?? '',
         rating:                    typeof r.rating === 'number' ? r.rating : 0,
         text:                      r.text ?? '',
