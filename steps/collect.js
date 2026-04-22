@@ -43,7 +43,7 @@ async function textSearchPage(query, apiKey, pageToken) {
 async function fetchDetails(placeId, apiKey) {
   const params = new URLSearchParams({
     place_id: placeId,
-    fields:   'website,formatted_phone_number',
+    fields:   'website,formatted_phone_number,opening_hours,reviews,photos,formatted_address',
     key:      apiKey,
   });
   const res = await fetch(`${PLACE_DETAILS_URL}?${params}`);
@@ -53,9 +53,40 @@ async function fetchDetails(placeId, apiKey) {
   if (data.status !== 'OK') {
     throw new Error(`Place Details error for ${placeId}: ${data.status}`);
   }
+
+  const result = data.result ?? {};
+
+  const oh = result.opening_hours;
+  const hours = oh ? {
+    weekday_text: Array.isArray(oh.weekday_text) ? oh.weekday_text : [],
+    open_now:     Boolean(oh.open_now),
+  } : null;
+
+  const reviews = Array.isArray(result.reviews) && result.reviews.length > 0
+    ? result.reviews.slice(0, 3).map((r) => ({
+        author_name:               r.author_name ?? '',
+        rating:                    typeof r.rating === 'number' ? r.rating : 0,
+        text:                      r.text ?? '',
+        relative_time_description: r.relative_time_description ?? '',
+        time:                      typeof r.time === 'number' ? r.time : 0,
+      }))
+    : null;
+
+  const photos_urls = Array.isArray(result.photos) && result.photos.length > 0
+    ? result.photos
+        .slice(0, 5)
+        .map((p) => p.photo_reference
+          ? `https://maps.googleapis.com/maps/api/place/photo?maxwidth=1600&photo_reference=${p.photo_reference}&key=${apiKey}`
+          : null)
+        .filter(Boolean)
+    : null;
+
   return {
-    website: data.result?.website ?? null,
-    phone:   data.result?.formatted_phone_number ?? '',
+    website: result.website ?? null,
+    phone:   result.formatted_phone_number ?? '',
+    hours,
+    reviews,
+    photos_urls,
   };
 }
 
@@ -98,8 +129,16 @@ export async function collect({ niche, city, limit, searchCity }) {
     try {
       const details = await fetchDetails(place.place_id, apiKey);
       return { ...place, ...details };
-    } catch {
-      return { ...place, website: null, phone: '' };
+    } catch (err) {
+      console.warn(`\n    ⚠️   Place Details failed for ${place.place_id}: ${err.message}`);
+      return {
+        ...place,
+        website:     null,
+        phone:       '',
+        hours:       null,
+        reviews:     null,
+        photos_urls: null,
+      };
     }
   }, 5);
   process.stdout.write('\n');
@@ -118,6 +157,9 @@ export async function collect({ niche, city, limit, searchCity }) {
     website:       hasWebsite ? p.website : null,
     rating:        p.rating,
     review_count:  p.review_count,
+    hours:         p.hours ?? null,
+    reviews:       p.reviews ?? null,
+    photos_urls:   p.photos_urls ?? null,
     no_website:    !hasWebsite,
     status:        'prospected',
     status_updated_at: collected_at,
