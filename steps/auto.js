@@ -338,6 +338,15 @@ export async function runAuto({ minScore = 3, dry = false, send = false, limit =
     totalQualified += result.qualified;
     totalSent      += result.sent;
 
+    // Stop the whole run — not just sends — when all instances are capped.
+    // Without this, the queue loop kept calling processItem, which re-ran
+    // collect/analyze/score (expensive, burns Google Places + Claude budget)
+    // for leads that would never be sent.
+    if (result.maxSendReached) {
+      console.log(`\n⛔  All instances hit their run cap — stopping auto mode.`);
+      break;
+    }
+
     if (maxSend && totalSent >= maxSend) {
       console.log(`\n⛔  --max-send ${maxSend} reached — stopping auto mode.`);
       break;
