@@ -286,6 +286,7 @@ async function processItem(item, { minScore, dry, send, limit, maxSend, totalSen
  */
 export async function runAuto({ minScore = 3, dry = false, send = false, limit = 20, market = 'all', externalConfig, maxSend } = {}) {
   const startTime = Date.now();
+  const runStartedAt = new Date(startTime).toISOString();
   const marketLabel = externalConfig ? externalConfig.country : (market === 'all' ? 'BR + US' : market);
 
   console.log(`\n🤖  AUTONOMOUS MODE — ${marketLabel}`);
@@ -350,6 +351,31 @@ export async function runAuto({ minScore = 3, dry = false, send = false, limit =
     if (maxSend && totalSent >= maxSend) {
       console.log(`\n⛔  --max-send ${maxSend} reached — stopping auto mode.`);
       break;
+    }
+  }
+
+  // Invariant: "se foi prospectado, foi enviado". Any lead collected during
+  // this run that's still sitting at status=prospected (landline, rate limit,
+  // run cap hit, all-instances-failed) would otherwise leak as dead weight —
+  // dedup would then block re-prospecting it next run. Delete instead of
+  // disqualifying so the business can be re-tried cleanly. Only runs in
+  // real send mode (dry runs intentionally save prospected leads for preview).
+  if (send) {
+    try {
+      const supa = getClient();
+      const { data: stale, error } = await supa
+        .from('leads')
+        .delete()
+        .eq('status', 'prospected')
+        .gte('collected_at', runStartedAt)
+        .select('place_id');
+      if (error) {
+        console.warn(`⚠️   prospected cleanup failed: ${error.message}`);
+      } else if (stale && stale.length > 0) {
+        console.log(`🧹  Cleaned ${stale.length} prospected leads that were never sent (landline / cap / error).`);
+      }
+    } catch (err) {
+      console.warn(`⚠️   prospected cleanup threw: ${err.message}`);
     }
   }
 
