@@ -153,6 +153,34 @@ async function processItem(item, { minScore, dry, send, limit, maxSend, totalSen
     }
   }
 
+  // ── US-WA: only no-website leads qualify ────────────────────────────────
+  // US WhatsApp preview-first is tuned for businesses without a site: Claude
+  // Code builds one from scratch and the outreach opens with "built you a
+  // version", which lands way harder than "built a better version of your
+  // current site". Skip analyze/visual/score on with-website leads entirely
+  // — saves PageSpeed, Claude, and Getimg spend per run.
+  if (channel === 'whatsapp' && country === 'US' && leads.length > 0) {
+    console.log(
+      `    ${tag} US-WA preview-first targets only no-website leads — skipping ${leads.length} with-website.`,
+    );
+    const minimal = leads.map(l => ({
+      place_id: l.place_id,
+      niche: l.niche,
+      search_city: l.search_city,
+      city: l.city,
+      country,
+      business_name: l.business_name,
+      phone: l.phone || null,
+      website: l.website || null,
+      no_website: false,
+      pain_score: 0,
+      status: 'disqualified',
+      status_updated_at: new Date().toISOString(),
+    }));
+    await upsertLeads(minimal);
+    leads = [];
+  }
+
   // ── Pipeline for leads WITH websites ────────────────────────────────────
 
   let qualified = [];
