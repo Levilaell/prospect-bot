@@ -9,7 +9,7 @@ import { score }            from './score.js';
 import { generateMessages } from './message.js';
 import { upsertLeads, getClient } from '../lib/supabase.js';
 import { enrichLeads }      from '../lib/enricher.js';
-import { sendWhatsApp }     from '../lib/whatsapp.js';
+import { sendWhatsApp, checkWhatsappNumbers, normalizePhone } from '../lib/whatsapp.js';
 import { sendSms }          from '../lib/sms.js';
 import { getAlreadySentPlaceIds, sendToInstantly } from '../lib/instantly.js';
 import { notifyCrmProjectCreate } from '../lib/crm-client.js';
@@ -288,12 +288,70 @@ async function processItem(item, { minScore, dry, send, limit, maxSend, maxProje
   // — each Project costs ~$0.72 in Opus + Getimg, so without a cap a full
   // queue could burn hundreds of dollars per run.
   if (channel === 'whatsapp' && country === 'US') {
-    await upsertLeads(allQualified);
+    // ── Pre-filter: drop leads whose phone isn't registered on WhatsApp ───
+    // Every US project costs ~$0.72 in Opus + Getimg spend and produces a
+    // preview whose only distribution channel is WhatsApp. If the number
+    // isn't on WA, that preview can never go out — $0.72 burned. This check
+    // is fail-open: if Evolution itself errors, we assume all leads are
+    // valid and proceed (see lib/whatsapp.js checkWhatsappNumbers).
+    let projectCandidates = allQualified;
+    if (allQualified.length > 0) {
+      const phones = allQualified.map(l => l.phone).filter(Boolean);
+      const { existing, nonExisting, errored } = await checkWhatsappNumbers(phones, { country });
+
+      if (!errored && nonExisting.size > 0) {
+        const withWa = [];
+        const withoutWa = [];
+        for (const lead of allQualified) {
+          const n = normalizePhone(lead.phone, country);
+          if (n && existing.has(n)) withWa.push(lead);
+          else if (n && nonExisting.has(n)) withoutWa.push(lead);
+          else withWa.push(lead); // shape invalid or lookup inconclusive — let it through, send path will catch it
+        }
+
+        if (withoutWa.length > 0) {
+          const minimal = withoutWa.map(l => ({
+            place_id: l.place_id,
+            niche: l.niche,
+            search_city: l.search_city,
+            city: l.city,
+            country,
+            business_name: l.business_name,
+            phone: l.phone,
+            no_website: l.no_website ?? true,
+            pain_score: 0,
+            score_reasons: ['no_whatsapp_number'],
+            status: 'disqualified',
+            status_updated_at: new Date().toISOString(),
+          }));
+          await upsertLeads(minimal);
+          const savedUsd = (withoutWa.length * 0.72).toFixed(2);
+          console.log(
+            `    ${tag} US-WA pre-filter: ${withoutWa.length}/${allQualified.length} without WhatsApp — ` +
+            `disqualified (saved ~$${savedUsd} in preview budget).`,
+          );
+          projectCandidates = withWa;
+        }
+      }
+    }
+
+    if (projectCandidates.length === 0) {
+      console.log(`    ${tag} No US-WA candidates remaining after WhatsApp pre-filter — skipping project creation.`);
+      return {
+        collected: totalCollected,
+        qualified: allQualified.length,
+        sent: 0,
+        projectsCreated: 0,
+        maxProjectsReached: false,
+      };
+    }
+
+    await upsertLeads(projectCandidates);
     let created = 0;
     let reused = 0;
     let failed = 0;
     let capReached = false;
-    for (const lead of allQualified) {
+    for (const lead of projectCandidates) {
       // Both `created` and `reused` count toward the cap. Reused happens
       // when a retry after timeout sees the project the first attempt
       // actually created — the work was done in this run. If we only
