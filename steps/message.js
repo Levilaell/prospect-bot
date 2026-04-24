@@ -9,6 +9,10 @@ import {
   SYSTEM_NO_WEBSITE_PT,
   SYSTEM_EMAIL_EN,
   SYSTEM_NO_WEBSITE_EMAIL_EN,
+  SYSTEM_SMS_EN,
+  SYSTEM_NO_WEBSITE_SMS_EN,
+  SYSTEM_WA_US_EN,
+  SYSTEM_NO_WEBSITE_WA_US_EN,
 } from "../lib/prompts.js";
 import { getNicheContext } from "../lib/niche-templates.js";
 
@@ -302,6 +306,17 @@ function buildSystemPrompt(lead, lang, channel) {
     return isNoWebsite ? SYSTEM_NO_WEBSITE_EMAIL_EN : SYSTEM_EMAIL_EN;
   }
 
+  if (channel === "sms" && lang === "en") {
+    return isNoWebsite ? SYSTEM_NO_WEBSITE_SMS_EN : SYSTEM_SMS_EN;
+  }
+
+  // US WhatsApp needs its own prompt — SYSTEM_EN is email-shaped and
+  // uses "48h" and "only pay if you like it", which read as scam in a
+  // US WhatsApp DM.
+  if (channel === "whatsapp" && lang === "en") {
+    return isNoWebsite ? SYSTEM_NO_WEBSITE_WA_US_EN : SYSTEM_WA_US_EN;
+  }
+
   if (isNoWebsite) {
     return lang === "pt" ? SYSTEM_NO_WEBSITE_PT : SYSTEM_NO_WEBSITE_EN;
   }
@@ -321,6 +336,7 @@ function buildSystemPrompt(lead, lang, channel) {
 export async function generateMessages(leads, { lang = "en", channel } = {}) {
   const resolvedChannel = channel ?? (lang === "pt" ? "whatsapp" : "email");
   const isEmail = resolvedChannel === "email";
+  const isSms = resolvedChannel === "sms";
 
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
   const total = leads.length;
@@ -337,7 +353,7 @@ export async function generateMessages(leads, { lang = "en", channel } = {}) {
       try {
         const response = await client.messages.create({
           model: "claude-haiku-4-5-20251001",
-          max_tokens: isEmail ? 500 : 300,
+          max_tokens: isEmail ? 500 : isSms ? 200 : 300,
           system: buildSystemPrompt(lead, lang, resolvedChannel),
           messages: [{ role: "user", content: buildUserPrompt(lead, lang) }],
         });

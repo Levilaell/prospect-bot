@@ -104,11 +104,15 @@ const server = createServer(async (req, res) => {
         const body = await parseBody(req)
         market = body.market || 'all'
         if (body.niches && body.cities) {
+          // `market` is the campaign code (BR, US-EM, US-WA, US-SMS). The
+          // admin sends `country` and `channel` explicitly now so we don't
+          // have to reverse-engineer them from the code here.
           externalConfig = {
             niches: body.niches,
             cities: body.cities,
-            country: body.market || 'BR',
+            country: body.country || (body.market === 'BR' ? 'BR' : 'US'),
             lang: body.lang || 'pt',
+            channel: body.channel || (body.lang === 'pt' ? 'whatsapp' : 'email'),
           }
         }
       } else {
@@ -175,8 +179,9 @@ const server = createServer(async (req, res) => {
         const configData = {
           niches: body.niches,
           cities: body.cities,
-          country: body.market || 'BR',
+          country: body.country || (body.market === 'BR' ? 'BR' : 'US'),
           lang: body.lang || 'pt',
+          channel: body.channel || (body.lang === 'pt' ? 'whatsapp' : 'email'),
         }
         if (body.evolutionInstances && body.evolutionApiUrl) {
           configData.evolutionInstances = body.evolutionInstances

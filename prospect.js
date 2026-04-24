@@ -27,7 +27,7 @@ try {
   }));
 } catch (err) {
   console.error(`❌  Invalid arguments: ${err.message}`);
-  console.error('    Usage: node prospect.js --auto [--market BR|US|all] [--limit N] [--min-score N] [--dry] [--send] [--max-send N] [--config <path>]');
+  console.error('    Usage: node prospect.js --auto [--market BR|US-EM|US-WA|US-SMS|all] [--limit N] [--min-score N] [--dry] [--send] [--max-send N] [--config <path>]');
   process.exit(1);
 }
 
@@ -47,9 +47,15 @@ if (raw.auto) {
 
   const autoLimit    = parseInt(raw.limit, 10) || 20;
   const autoMinScore = parseInt(raw['min-score'], 10) || 3;
-  const market       = raw.market?.toUpperCase() === 'BR' ? 'BR'
-                     : raw.market?.toUpperCase() === 'US' ? 'US'
-                     : 'all';
+  // Campaign code — admin /bot UI sends these identifiers. 'US' kept as an
+  // alias of 'US-EM' for CLI convenience, but prefer the explicit forms.
+  const marketInput = raw.market?.toUpperCase();
+  const market      = marketInput === 'BR'     ? 'BR'
+                    : marketInput === 'US'     ? 'US-EM'
+                    : marketInput === 'US-EM'  ? 'US-EM'
+                    : marketInput === 'US-WA'  ? 'US-WA'
+                    : marketInput === 'US-SMS' ? 'US-SMS'
+                    : 'all';
 
   // Load external config from dashboard if provided via --config <path>
   let externalConfig;

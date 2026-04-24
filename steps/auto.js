@@ -10,6 +10,7 @@ import { generateMessages } from './message.js';
 import { upsertLeads, getClient } from '../lib/supabase.js';
 import { enrichLeads }      from '../lib/enricher.js';
 import { sendWhatsApp }     from '../lib/whatsapp.js';
+import { sendSms }          from '../lib/sms.js';
 import { getAlreadySentPlaceIds, sendToInstantly } from '../lib/instantly.js';
 
 /**
@@ -18,8 +19,20 @@ import { getAlreadySentPlaceIds, sendToInstantly } from '../lib/instantly.js';
  */
 async function processItem(item, { minScore, dry, send, limit, maxSend, totalSentSoFar = 0 }) {
   const { niche, searchCity, lang, country = lang === 'pt' ? 'BR' : 'US' } = item;
-  const channel = lang === 'pt' ? 'whatsapp' : 'email';
+  // Channel comes from the campaign config (dashboard sends it via externalConfig).
+  // Fall back to lang-based defaults for direct CLI / legacy callers: BR→WA, US→email.
+  const channel = item.channel ?? (lang === 'pt' ? 'whatsapp' : 'email');
   const tag = `[${niche} | ${searchCity}]`;
+
+  // SMS provider (Twilio) isn't wired yet — every send would fail with
+  // sms_not_configured AND the end-of-run cleanup would then delete the
+  // prospected leads, so next run re-scrapes them (burns Google Places +
+  // Claude budget on every pass). Block --send until SMS is live.
+  if (channel === 'sms' && send) {
+    console.warn(`\n⚠️   ${tag} SMS provider not configured — refusing --send to avoid burning collect/analyze budget on failed sends.`);
+    console.warn(`    Re-run with --dry to scrape + score leads, or wire up lib/sms.js first.`);
+    return { collected: 0, qualified: 0, sent: 0 };
+  }
 
   // 1. Collect
   console.log(`\n🔍  ${tag} Collecting up to ${limit} leads...`);
@@ -73,17 +86,34 @@ async function processItem(item, { minScore, dry, send, limit, maxSend, totalSen
     return { collected: 0, qualified: 0, sent: 0 };
   }
 
-  // 1.6. Phone filter (BR only) — disqualify leads without valid WhatsApp number
-  if (lang === 'pt') {
+  // 1.6. Phone filter (WA + SMS campaigns only) — disqualify leads without a
+  // valid mobile number for the target country. Email campaigns don't need
+  // phone validation at this stage.
+  if (channel === 'whatsapp' || channel === 'sms') {
+    const normalize = (raw) => {
+      const digits = (raw || '').replace(/\D/g, '');
+      if (country === 'US') {
+        if (digits.startsWith('1') && digits.length === 11) return digits;
+        if (digits.length === 10) return '1' + digits;
+        return digits;
+      }
+      // BR default
+      if (digits.startsWith('55')) return digits;
+      if (digits.startsWith('0')) return '55' + digits.slice(1);
+      return '55' + digits;
+    };
+    const validShape = (phone) => {
+      if (country === 'US') return /^1\d{10}$/.test(phone);
+      // BR requires mobile (9th-digit rule) for WhatsApp sends
+      return /^55\d{2}9\d{8}$/.test(phone);
+    };
+
     const filterByPhone = (list) => {
       const valid = [];
       const invalid = [];
       for (const lead of list) {
-        const digits = (lead.phone || '').replace(/\D/g, '');
-        const normalized = digits.startsWith('55') ? digits
-          : digits.startsWith('0') ? '55' + digits.slice(1)
-          : '55' + digits;
-        if (normalized.match(/^55\d{2}9\d{8}$/)) {
+        const normalized = normalize(lead.phone);
+        if (validShape(normalized)) {
           valid.push(lead);
         } else {
           invalid.push(lead);
@@ -110,12 +140,13 @@ async function processItem(item, { minScore, dry, send, limit, maxSend, totalSen
         status_updated_at: new Date().toISOString(),
       }));
       await upsertLeads(minimal);
-      console.log(`    ${tag} Disqualified ${allNoPhone.length} leads without valid WhatsApp number.`);
+      const reason = country === 'US' ? 'valid US mobile' : 'valid WhatsApp number';
+      console.log(`    ${tag} Disqualified ${allNoPhone.length} leads without ${reason}.`);
     }
     leads = webResult.valid;
     noWebsiteLeads = noWebResult.valid;
     if (leads.length === 0 && noWebsiteLeads.length === 0) {
-      console.log(`    ${tag} No leads with valid WhatsApp — skipping.`);
+      console.log(`    ${tag} No leads with valid phone for ${channel} — skipping.`);
       return { collected: allNoPhone.length, qualified: 0, sent: 0 };
     }
   }
@@ -231,33 +262,44 @@ async function processItem(item, { minScore, dry, send, limit, maxSend, totalSen
   let sentCount = 0;
   let maxSendReached = false;
   if (send) {
-    // Enrich emails
-    if (country === 'US') withMessages = await enrichLeads(withMessages);
+    // Email campaigns enrich email from the site before dispatching.
+    if (channel === 'email') withMessages = await enrichLeads(withMessages);
 
-    if (lang === 'pt') {
-      // WhatsApp — BR leads with phone
+    const remaining = maxSend ? maxSend - totalSentSoFar : undefined;
+
+    if (channel === 'whatsapp') {
       const forWA = withMessages.filter((l) => l.phone);
       if (forWA.length > 0) {
         try {
           const alreadySent = await getAlreadySentPlaceIds(forWA.map((l) => l.place_id));
           const toSend = forWA.filter((l) => !alreadySent.has(l.place_id));
-          const remaining = maxSend ? maxSend - totalSentSoFar : undefined;
-          const result = await sendWhatsApp(toSend, { maxSend: remaining });
+          const result = await sendWhatsApp(toSend, { maxSend: remaining, country });
           sentCount += result.sent;
           maxSendReached = !!result.maxSendReached;
         } catch (err) {
           console.warn(`⚠️  ${tag} WhatsApp send failed: ${err.message}`);
         }
       }
-    } else {
-      // Instantly — email leads
+    } else if (channel === 'sms') {
+      const forSms = withMessages.filter((l) => l.phone);
+      if (forSms.length > 0) {
+        try {
+          const alreadySent = await getAlreadySentPlaceIds(forSms.map((l) => l.place_id));
+          const toSend = forSms.filter((l) => !alreadySent.has(l.place_id));
+          const result = await sendSms(toSend, { maxSend: remaining });
+          sentCount += result.sent;
+          maxSendReached = !!result.maxSendReached;
+        } catch (err) {
+          console.warn(`⚠️  ${tag} SMS send failed: ${err.message}`);
+        }
+      }
+    } else if (channel === 'email') {
       const forEmail = withMessages.filter((l) => l.email);
       if (forEmail.length > 0) {
         try {
           const alreadySent = await getAlreadySentPlaceIds(forEmail.map((l) => l.place_id));
           const toSend = forEmail.filter((l) => !alreadySent.has(l.place_id));
           if (toSend.length > 0) {
-            const remaining = maxSend ? maxSend - totalSentSoFar : undefined;
             const result = await sendToInstantly(toSend, { maxSend: remaining });
             sentCount += result.sent;
             maxSendReached = !!result.maxSendReached;
