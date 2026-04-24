@@ -294,7 +294,11 @@ async function processItem(item, { minScore, dry, send, limit, maxSend, maxProje
     let failed = 0;
     let capReached = false;
     for (const lead of allQualified) {
-      if (maxProjects && totalProjectsSoFar + created >= maxProjects) {
+      // Both `created` and `reused` count toward the cap. Reused happens
+      // when a retry after timeout sees the project the first attempt
+      // actually created — the work was done in this run. If we only
+      // counted `created`, a slow endpoint would silently break the cap.
+      if (maxProjects && totalProjectsSoFar + created + reused >= maxProjects) {
         capReached = true;
         break;
       }
@@ -316,7 +320,7 @@ async function processItem(item, { minScore, dry, send, limit, maxSend, maxProje
       collected: totalCollected,
       qualified: allQualified.length,
       sent: 0,
-      projectsCreated: created,
+      projectsCreated: created + reused,
       maxProjectsReached: capReached,
     };
   }
