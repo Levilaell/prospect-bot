@@ -152,12 +152,13 @@ const server = createServer(async (req, res) => {
     }
 
     const body = await parseBody(req)
-    const limit    = body.limit ?? '20'
-    const minScore = body.min_score ?? '4'
-    const dryRun   = body.dry_run ?? false
-    const send     = body.send ?? false
-    const market   = body.market ?? 'all'
-    const maxSend  = body.max_send
+    const limit       = body.limit ?? '20'
+    const minScore    = body.min_score ?? '4'
+    const dryRun      = body.dry_run ?? false
+    const send        = body.send ?? false
+    const market      = body.market ?? 'all'
+    const maxSend     = body.max_send
+    const maxProjects = body.max_projects
 
     const args = [
       prospectPath,
@@ -169,6 +170,7 @@ const server = createServer(async (req, res) => {
     if (dryRun) args.push('--dry')
     if (send && !dryRun) args.push('--send')
     if (maxSend) args.push('--max-send', String(maxSend))
+    if (maxProjects) args.push('--max-projects', String(maxProjects))
 
     // Write temp config file with niches, cities, and Evolution instances
     let configTmpPath

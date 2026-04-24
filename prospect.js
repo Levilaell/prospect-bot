@@ -21,13 +21,14 @@ try {
       market:        { type: 'string',  default: 'all' },
       config:        { type: 'string' },
       'max-send':    { type: 'string' },
+      'max-projects': { type: 'string' },
     },
     strict: true,
     allowPositionals: true,
   }));
 } catch (err) {
   console.error(`❌  Invalid arguments: ${err.message}`);
-  console.error('    Usage: node prospect.js --auto [--market BR|US-EM|US-WA|US-SMS|all] [--limit N] [--min-score N] [--dry] [--send] [--max-send N] [--config <path>]');
+  console.error('    Usage: node prospect.js --auto [--market BR|US-EM|US-WA|US-SMS|all] [--limit N] [--min-score N] [--dry] [--send] [--max-send N] [--max-projects N] [--config <path>]');
   process.exit(1);
 }
 
@@ -72,10 +73,11 @@ if (raw.auto) {
   }
 
   const maxSend = raw['max-send'] ? parseInt(raw['max-send'], 10) : undefined;
+  const maxProjects = raw['max-projects'] ? parseInt(raw['max-projects'], 10) : undefined;
 
-  // CRM client is required whenever we might actually send, so fail fast on
-  // missing shared-secret / base URL.
-  if (raw.send) {
+  // CRM client is required whenever we might actually send or create
+  // projects, so fail fast on missing shared-secret / base URL.
+  if (raw.send || (market && market.startsWith('US-'))) {
     try { validateCrmEnv(); } catch (err) { fatal(err.message); }
   }
 
@@ -87,6 +89,7 @@ if (raw.auto) {
     market,
     externalConfig,
     maxSend,
+    maxProjects,
   }).catch((err) => {
     console.error(`❌  Auto mode fatal: ${err.message}`);
     process.exit(1);

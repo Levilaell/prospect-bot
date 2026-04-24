@@ -18,7 +18,7 @@ import { notifyCrmProjectCreate } from '../lib/crm-client.js';
  * Runs a single queue item through the full pipeline.
  * Returns { collected, qualified, sent } counts.
  */
-async function processItem(item, { minScore, dry, send, limit, maxSend, totalSentSoFar = 0 }) {
+async function processItem(item, { minScore, dry, send, limit, maxSend, maxProjects, totalSentSoFar = 0, totalProjectsSoFar = 0 }) {
   const { niche, searchCity, lang, country = lang === 'pt' ? 'BR' : 'US' } = item;
   // Channel comes from the campaign config (dashboard sends it via externalConfig).
   // Fall back to lang-based defaults for direct CLI / legacy callers: BR→WA, US→email.
@@ -283,12 +283,21 @@ async function processItem(item, { minScore, dry, send, limit, maxSend, totalSen
   // Claude Code prompt + images, and waits for Levi to run Claude Code
   // locally and paste the preview URL. Admin + Levi dispatch the outreach
   // (with the URL embedded) later via the /bot UI.
+  //
+  // `maxProjects` caps how many Projects this run creates across all combos
+  // — each Project costs ~$0.72 in Opus + Getimg, so without a cap a full
+  // queue could burn hundreds of dollars per run.
   if (channel === 'whatsapp' && country === 'US') {
     await upsertLeads(allQualified);
     let created = 0;
     let reused = 0;
     let failed = 0;
+    let capReached = false;
     for (const lead of allQualified) {
+      if (maxProjects && totalProjectsSoFar + created >= maxProjects) {
+        capReached = true;
+        break;
+      }
       const res = await notifyCrmProjectCreate({ place_id: lead.place_id });
       if (res?.ok) {
         if (res.already_existed) reused++;
@@ -301,12 +310,15 @@ async function processItem(item, { minScore, dry, send, limit, maxSend, totalSen
       }
     }
     console.log(
-      `🧰  ${tag} US preview-first: ${created} project(s) created, ${reused} already existed, ${failed} failed.`,
+      `🧰  ${tag} US preview-first: ${created} project(s) created, ${reused} already existed, ${failed} failed${capReached ? ' [max-projects reached]' : ''}.`,
     );
-    // `sent=0` here — the outreach message hasn't been dispatched yet; admin
-    // sends it once Levi pastes the preview URL. Returning qualified count so
-    // run summary still makes sense.
-    return { collected: totalCollected, qualified: allQualified.length, sent: 0 };
+    return {
+      collected: totalCollected,
+      qualified: allQualified.length,
+      sent: 0,
+      projectsCreated: created,
+      maxProjectsReached: capReached,
+    };
   }
 
   // 4. Generate messages (handles both with-website and no-website via no_website flag)
@@ -389,14 +401,14 @@ async function processItem(item, { minScore, dry, send, limit, maxSend, totalSen
  * @param {object} [opts.externalConfig] - { niches, cities, country, lang } from dashboard
  * @param {number} [opts.maxSend] - max messages to send this execution (stops cleanly when reached)
  */
-export async function runAuto({ minScore = 3, dry = false, send = false, limit = 20, market = 'all', externalConfig, maxSend } = {}) {
+export async function runAuto({ minScore = 3, dry = false, send = false, limit = 20, market = 'all', externalConfig, maxSend, maxProjects } = {}) {
   const startTime = Date.now();
   const runStartedAt = new Date(startTime).toISOString();
   const marketLabel = externalConfig ? externalConfig.country : (market === 'all' ? 'BR + US' : market);
 
   console.log(`\n🤖  AUTONOMOUS MODE — ${marketLabel}`);
   console.log('━'.repeat(50));
-  console.log(`    market: ${marketLabel}  |  min-score: ${minScore}  |  limit/item: ${limit}  |  dry: ${dry}  |  send: ${send}${maxSend ? `  |  max-send: ${maxSend}` : ''}`);
+  console.log(`    market: ${marketLabel}  |  min-score: ${minScore}  |  limit/item: ${limit}  |  dry: ${dry}  |  send: ${send}${maxSend ? `  |  max-send: ${maxSend}` : ''}${maxProjects ? `  |  max-projects: ${maxProjects}` : ''}`);
 
   // Generate queue from Supabase diff (filtered by market or external config)
   console.log('\n📋  Generating queue...');
@@ -432,6 +444,7 @@ export async function runAuto({ minScore = 3, dry = false, send = false, limit =
   let totalCollected = 0;
   let totalQualified = 0;
   let totalSent      = 0;
+  let totalProjects  = 0;
   let processed      = 0;
 
   for (const item of queue) {
@@ -439,10 +452,15 @@ export async function runAuto({ minScore = 3, dry = false, send = false, limit =
     console.log(`\n${'═'.repeat(50)}`);
     console.log(`📌  Queue item ${processed}/${queue.length}`);
 
-    const result = await processItem(item, { minScore, dry, send, limit, maxSend, totalSentSoFar: totalSent });
+    const result = await processItem(item, {
+      minScore, dry, send, limit, maxSend, maxProjects,
+      totalSentSoFar: totalSent,
+      totalProjectsSoFar: totalProjects,
+    });
     totalCollected += result.collected;
     totalQualified += result.qualified;
     totalSent      += result.sent;
+    totalProjects  += result.projectsCreated ?? 0;
 
     // Stop the whole run — not just sends — when all instances are capped.
     // Without this, the queue loop kept calling processItem, which re-ran
@@ -450,6 +468,11 @@ export async function runAuto({ minScore = 3, dry = false, send = false, limit =
     // for leads that would never be sent.
     if (result.maxSendReached) {
       console.log(`\n⛔  All instances hit their run cap — stopping auto mode.`);
+      break;
+    }
+
+    if (result.maxProjectsReached || (maxProjects && totalProjects >= maxProjects)) {
+      console.log(`\n⛔  --max-projects ${maxProjects} reached (${totalProjects} created) — stopping auto mode.`);
       break;
     }
 
@@ -496,6 +519,7 @@ export async function runAuto({ minScore = 3, dry = false, send = false, limit =
   console.log(`📦  Total collected:  ${totalCollected}`);
   console.log(`🎯  Total qualified:  ${totalQualified}`);
   if (send) console.log(`📤  Total sent:       ${totalSent}`);
+  if (totalProjects > 0) console.log(`🧰  Projects criados: ${totalProjects}`);
   console.log(`⏱️   Time:            ${timeStr}`);
   console.log(`${'━'.repeat(50)}\n`);
 }
