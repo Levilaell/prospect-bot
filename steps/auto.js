@@ -12,6 +12,7 @@ import { enrichLeads }      from '../lib/enricher.js';
 import { sendWhatsApp }     from '../lib/whatsapp.js';
 import { sendSms }          from '../lib/sms.js';
 import { getAlreadySentPlaceIds, sendToInstantly } from '../lib/instantly.js';
+import { notifyCrmProjectCreate } from '../lib/crm-client.js';
 
 /**
  * Runs a single queue item through the full pipeline.
@@ -132,6 +133,7 @@ async function processItem(item, { minScore, dry, send, limit, maxSend, totalSen
         niche: l.niche,
         search_city: l.search_city,
         city: l.city,
+        country,
         business_name: l.business_name,
         phone: l.phone || null,
         no_website: l.no_website || false,
@@ -208,6 +210,7 @@ async function processItem(item, { minScore, dry, send, limit, maxSend, totalSen
         niche: l.niche,
         search_city: l.search_city,
         city: l.city,
+        country,
         business_name: l.business_name,
         pain_score: l.pain_score,
         status: 'disqualified',
@@ -244,6 +247,38 @@ async function processItem(item, { minScore, dry, send, limit, maxSend, totalSen
 
   if (allQualified.length === 0) {
     return { collected: totalCollected, qualified: 0, sent: 0 };
+  }
+
+  // ── US-WhatsApp preview-first branch ────────────────────────────────────
+  // Instead of generating a cold outreach message and sending it, hand the
+  // qualified leads off to the admin: it creates a Project, generates the
+  // Claude Code prompt + images, and waits for Levi to run Claude Code
+  // locally and paste the preview URL. Admin + Levi dispatch the outreach
+  // (with the URL embedded) later via the /bot UI.
+  if (channel === 'whatsapp' && country === 'US') {
+    await upsertLeads(allQualified);
+    let created = 0;
+    let reused = 0;
+    let failed = 0;
+    for (const lead of allQualified) {
+      const res = await notifyCrmProjectCreate({ place_id: lead.place_id });
+      if (res?.ok) {
+        if (res.already_existed) reused++;
+        else created++;
+      } else {
+        failed++;
+        console.warn(
+          `⚠️  ${tag} CRM project/create failed for ${lead.place_id}: ${res?.error ?? 'unknown'}`,
+        );
+      }
+    }
+    console.log(
+      `🧰  ${tag} US preview-first: ${created} project(s) created, ${reused} already existed, ${failed} failed.`,
+    );
+    // `sent=0` here — the outreach message hasn't been dispatched yet; admin
+    // sends it once Levi pastes the preview URL. Returning qualified count so
+    // run summary still makes sense.
+    return { collected: totalCollected, qualified: allQualified.length, sent: 0 };
   }
 
   // 4. Generate messages (handles both with-website and no-website via no_website flag)
