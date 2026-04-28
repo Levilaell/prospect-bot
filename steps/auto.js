@@ -6,6 +6,7 @@ import { collect }          from './collect.js';
 import { analyze }          from './analyze.js';
 import { visualAnalysis }   from './visual.js';
 import { score }            from './score.js';
+import { qualify }          from './qualify.js';
 import { generateMessages } from './message.js';
 import { upsertLeads, getClient } from '../lib/supabase.js';
 import { enrichLeads }      from '../lib/enricher.js';
@@ -18,7 +19,21 @@ import { notifyCrmProjectCreate } from '../lib/crm-client.js';
  * Runs a single queue item through the full pipeline.
  * Returns { collected, qualified, sent } counts.
  */
-async function processItem(item, { minScore, dry, send, limit, maxSend, maxProjects, totalSentSoFar = 0, totalProjectsSoFar = 0 }) {
+async function processItem(item, {
+  minScore,
+  dry,
+  send,
+  limit,
+  maxSend,
+  maxProjects,
+  totalSentSoFar = 0,
+  totalProjectsSoFar = 0,
+  // True when the campaign is preview-first (US-WA, BR-WA-PREVIEW, …):
+  // bot creates Projects via CRM instead of dispatching outreach.
+  previewFirst = false,
+  // Optional pre-message gates. See steps/qualify.js for shape + semantics.
+  qualificationFilters,
+}) {
   const { niche, searchCity, lang, country = lang === 'pt' ? 'BR' : 'US' } = item;
   // Channel comes from the campaign config (dashboard sends it via externalConfig).
   // Fall back to lang-based defaults for direct CLI / legacy callers: BR→WA, US→email.
@@ -87,6 +102,55 @@ async function processItem(item, { minScore, dry, send, limit, maxSend, maxProje
     return { collected: 0, qualified: 0, sent: 0 };
   }
 
+  // 1.55. Pre-message qualification (rating, recency, franchise blacklist).
+  // Runs before phone-filter so we don't waste WA-numbers lookup budget on
+  // leads we'd reject anyway. No-op when externalConfig has no
+  // qualificationFilters set — every lead passes through unchanged.
+  if (qualificationFilters) {
+    const qWeb = qualify(leads, qualificationFilters);
+    const qNoWeb = qualify(noWebsiteLeads, qualificationFilters);
+    const allRejected = [...qWeb.rejected, ...qNoWeb.rejected];
+    if (allRejected.length > 0) {
+      // Persist as disqualified (keeps dedup honest — re-prospect won't pick
+      // them up again). Project's `_reviews_full` and `_business_status`
+      // are stripped by lib/supabase.js LEAD_COLUMNS whitelist.
+      const minimal = allRejected.map(l => ({
+        place_id: l.place_id,
+        niche: l.niche,
+        search_city: l.search_city,
+        city: l.city,
+        country,
+        business_name: l.business_name,
+        phone: l.phone || null,
+        rating: l.rating ?? null,
+        review_count: l.review_count ?? null,
+        no_website: l.no_website || false,
+        pain_score: 0,
+        score_reasons: l.score_reasons,
+        status: 'disqualified',
+        status_updated_at: new Date().toISOString(),
+      }));
+      await upsertLeads(minimal);
+      const breakdown = allRejected.reduce((acc, l) => {
+        const r = (l.score_reasons && l.score_reasons[0]) || 'unknown';
+        acc[r] = (acc[r] || 0) + 1;
+        return acc;
+      }, {});
+      const breakdownStr = Object.entries(breakdown)
+        .map(([k, v]) => `${k}=${v}`)
+        .join(', ');
+      console.log(
+        `    ${tag} Qualification gate dropped ${allRejected.length}: ${breakdownStr}.`,
+      );
+    }
+    leads = qWeb.qualified;
+    noWebsiteLeads = qNoWeb.qualified;
+    if (leads.length === 0 && noWebsiteLeads.length === 0) {
+      console.log(`    ${tag} All leads rejected by qualification gate — skipping.`);
+      return { collected: allRejected.length, qualified: 0, sent: 0 };
+    }
+  }
+
   // 1.6. Phone filter (WA + SMS campaigns only) — disqualify leads without a
   // valid mobile number for the target country. Email campaigns don't need
   // phone validation at this stage.
@@ -153,15 +217,16 @@ async function processItem(item, { minScore, dry, send, limit, maxSend, maxProje
     }
   }
 
-  // ── US-WA: only no-website leads qualify ────────────────────────────────
-  // US WhatsApp preview-first is tuned for businesses without a site: Claude
-  // Code builds one from scratch and the outreach opens with "built you a
-  // version", which lands way harder than "built a better version of your
-  // current site". Skip analyze/visual/score on with-website leads entirely
-  // — saves PageSpeed, Claude, and Getimg spend per run.
-  if (channel === 'whatsapp' && country === 'US' && leads.length > 0) {
+  // ── Preview-first: only no-website leads qualify ───────────────────────
+  // Preview-first campaigns (US-WA, BR-WA-PREVIEW) are tuned for businesses
+  // without a site: Claude Code builds one from scratch and the outreach
+  // opens with "I built you a version", which lands harder than "I built a
+  // better version of your current site". Skip analyze/visual/score on
+  // with-website leads entirely — saves PageSpeed, Claude, and Getimg
+  // spend per run.
+  if (previewFirst && leads.length > 0) {
     console.log(
-      `    ${tag} US-WA preview-first targets only no-website leads — skipping ${leads.length} with-website.`,
+      `    ${tag} preview-first targets only no-website leads — skipping ${leads.length} with-website.`,
     );
     const minimal = leads.map(l => ({
       place_id: l.place_id,
@@ -277,7 +342,7 @@ async function processItem(item, { minScore, dry, send, limit, maxSend, maxProje
     return { collected: totalCollected, qualified: 0, sent: 0 };
   }
 
-  // ── US-WhatsApp preview-first branch ────────────────────────────────────
+  // ── Preview-first branch (US-WA, BR-WA-PREVIEW, …) ──────────────────────
   // Instead of generating a cold outreach message and sending it, hand the
   // qualified leads off to the admin: it creates a Project, generates the
   // Claude Code prompt + images, and waits for Levi to run Claude Code
@@ -287,9 +352,9 @@ async function processItem(item, { minScore, dry, send, limit, maxSend, maxProje
   // `maxProjects` caps how many Projects this run creates across all combos
   // — each Project costs ~$0.72 in Opus + Getimg, so without a cap a full
   // queue could burn hundreds of dollars per run.
-  if (channel === 'whatsapp' && country === 'US') {
+  if (previewFirst) {
     // ── Pre-filter: drop leads whose phone isn't registered on WhatsApp ───
-    // Every US project costs ~$0.72 in Opus + Getimg spend and produces a
+    // Every project costs ~$0.72 in Opus + Getimg spend and produces a
     // preview whose only distribution channel is WhatsApp. If the number
     // isn't on WA, that preview can never go out — $0.72 burned. This check
     // is fail-open: if Evolution itself errors, we assume all leads are
@@ -327,7 +392,7 @@ async function processItem(item, { minScore, dry, send, limit, maxSend, maxProje
           await upsertLeads(minimal);
           const savedUsd = (withoutWa.length * 0.72).toFixed(2);
           console.log(
-            `    ${tag} US-WA pre-filter: ${withoutWa.length}/${allQualified.length} without WhatsApp — ` +
+            `    ${tag} preview-first pre-filter: ${withoutWa.length}/${allQualified.length} without WhatsApp — ` +
             `disqualified (saved ~$${savedUsd} in preview budget).`,
           );
           projectCandidates = withWa;
@@ -336,7 +401,7 @@ async function processItem(item, { minScore, dry, send, limit, maxSend, maxProje
     }
 
     if (projectCandidates.length === 0) {
-      console.log(`    ${tag} No US-WA candidates remaining after WhatsApp pre-filter — skipping project creation.`);
+      console.log(`    ${tag} No preview-first candidates remaining after WhatsApp pre-filter — skipping project creation.`);
       return {
         collected: totalCollected,
         qualified: allQualified.length,
@@ -372,7 +437,7 @@ async function processItem(item, { minScore, dry, send, limit, maxSend, maxProje
       }
     }
     console.log(
-      `🧰  ${tag} US preview-first: ${created} project(s) created, ${reused} already existed, ${failed} failed${capReached ? ' [max-projects reached]' : ''}.`,
+      `🧰  ${tag} preview-first: ${created} project(s) created, ${reused} already existed, ${failed} failed${capReached ? ' [max-projects reached]' : ''}.`,
     );
     return {
       collected: totalCollected,
@@ -468,9 +533,25 @@ export async function runAuto({ minScore = 3, dry = false, send = false, limit =
   const runStartedAt = new Date(startTime).toISOString();
   const marketLabel = externalConfig ? externalConfig.country : (market === 'all' ? 'BR + US' : market);
 
+  // Preview-first + qualificationFilters travel from dashboard via externalConfig.
+  // Both apply to every queue item in this run, so we hoist them once instead of
+  // threading through generateQueue.
+  const previewFirst = externalConfig?.previewFirst === true;
+  const qualificationFilters = externalConfig?.qualificationFilters;
+
   console.log(`\n🤖  AUTONOMOUS MODE — ${marketLabel}`);
   console.log('━'.repeat(50));
-  console.log(`    market: ${marketLabel}  |  min-score: ${minScore}  |  limit/item: ${limit}  |  dry: ${dry}  |  send: ${send}${maxSend ? `  |  max-send: ${maxSend}` : ''}${maxProjects ? `  |  max-projects: ${maxProjects}` : ''}`);
+  console.log(`    market: ${marketLabel}  |  min-score: ${minScore}  |  limit/item: ${limit}  |  dry: ${dry}  |  send: ${send}${maxSend ? `  |  max-send: ${maxSend}` : ''}${maxProjects ? `  |  max-projects: ${maxProjects}` : ''}${previewFirst ? '  |  preview-first' : ''}`);
+  if (qualificationFilters) {
+    const parts = [];
+    if (qualificationFilters.minRating != null) parts.push(`rating≥${qualificationFilters.minRating}`);
+    if (qualificationFilters.recentReviewMonths) parts.push(`review≤${qualificationFilters.recentReviewMonths}mo`);
+    if (qualificationFilters.requireOperational) parts.push('operational');
+    if (Array.isArray(qualificationFilters.franchiseBlacklist) && qualificationFilters.franchiseBlacklist.length) {
+      parts.push(`blacklist:${qualificationFilters.franchiseBlacklist.length}`);
+    }
+    if (parts.length) console.log(`    qualification: ${parts.join(', ')}`);
+  }
 
   // Generate queue from Supabase diff (filtered by market or external config)
   console.log('\n📋  Generating queue...');
@@ -518,6 +599,8 @@ export async function runAuto({ minScore = 3, dry = false, send = false, limit =
       minScore, dry, send, limit, maxSend, maxProjects,
       totalSentSoFar: totalSent,
       totalProjectsSoFar: totalProjects,
+      previewFirst,
+      qualificationFilters,
     });
     totalCollected += result.collected;
     totalQualified += result.qualified;
@@ -550,7 +633,11 @@ export async function runAuto({ minScore = 3, dry = false, send = false, limit =
   // dedup would then block re-prospecting it next run. Delete instead of
   // disqualifying so the business can be re-tried cleanly. Only runs in
   // real send mode (dry runs intentionally save prospected leads for preview).
-  if (send) {
+  //
+  // Skip in preview-first mode: those leads are queued as Projects and Levi
+  // takes them to dispatch later — deleting them here would yank rows the
+  // admin still needs to render the kanban.
+  if (send && !previewFirst) {
     try {
       const supa = getClient();
       const { data: stale, error } = await supa

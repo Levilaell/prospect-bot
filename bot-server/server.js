@@ -104,15 +104,18 @@ const server = createServer(async (req, res) => {
         const body = await parseBody(req)
         market = body.market || 'all'
         if (body.niches && body.cities) {
-          // `market` is the campaign code (BR, US-EM, US-WA, US-SMS). The
-          // admin sends `country` and `channel` explicitly now so we don't
-          // have to reverse-engineer them from the code here.
+          // `market` is the campaign code (BR, US-EM, US-WA, US-SMS,
+          // BR-WA-PREVIEW). The admin sends `country` and `channel`
+          // explicitly now so we don't have to reverse-engineer them from
+          // the code here.
           externalConfig = {
             niches: body.niches,
             cities: body.cities,
             country: body.country || (body.market === 'BR' ? 'BR' : 'US'),
             lang: body.lang || 'pt',
             channel: body.channel || (body.lang === 'pt' ? 'whatsapp' : 'email'),
+            ...(body.previewFirst === true ? { previewFirst: true } : {}),
+            ...(body.qualificationFilters ? { qualificationFilters: body.qualificationFilters } : {}),
           }
         }
       } else {
@@ -188,6 +191,15 @@ const server = createServer(async (req, res) => {
         if (body.evolutionInstances && body.evolutionApiUrl) {
           configData.evolutionInstances = body.evolutionInstances
           configData.evolutionApiUrl = body.evolutionApiUrl
+        }
+        // Preview-first + qualification filters (US-WA, BR-WA-PREVIEW, …).
+        // Without these the bot can't tell preview-first campaigns apart from
+        // legacy outreach campaigns and falls back to the old send-direct path.
+        if (body.previewFirst === true) {
+          configData.previewFirst = true
+        }
+        if (body.qualificationFilters && typeof body.qualificationFilters === 'object') {
+          configData.qualificationFilters = body.qualificationFilters
         }
         writeFileSync(configTmpPath, JSON.stringify(configData))
         args.push('--config', configTmpPath)

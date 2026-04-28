@@ -43,7 +43,12 @@ async function textSearchPage(query, apiKey, pageToken) {
 async function fetchDetails(placeId, apiKey) {
   const params = new URLSearchParams({
     place_id: placeId,
-    fields:   'website,formatted_phone_number,opening_hours,reviews,photos,formatted_address',
+    // business_status added so we can drop CLOSED_TEMPORARILY /
+    // CLOSED_PERMANENTLY before they ever land in leads/noWebsiteLeads.
+    // Google says ~3-5% of Place Search results are closed; without this
+    // filter that fraction was sitting in our pipeline burning enrich
+    // budget and showing up in "no reply" stats.
+    fields:   'website,formatted_phone_number,opening_hours,reviews,photos,formatted_address,business_status',
     key:      apiKey,
   });
   const res = await fetch(`${PLACE_DETAILS_URL}?${params}`);
@@ -67,15 +72,17 @@ async function fetchDetails(placeId, apiKey) {
   const reviewsFiltered = Array.isArray(result.reviews)
     ? result.reviews.filter((r) => r.text && r.text.trim().length >= 80)
     : [];
-  const reviews = reviewsFiltered.length > 0
-    ? reviewsFiltered.slice(0, 3).map((r) => ({
-        author_name:               r.author_name ?? '',
-        rating:                    typeof r.rating === 'number' ? r.rating : 0,
-        text:                      r.text ?? '',
-        relative_time_description: r.relative_time_description ?? '',
-        time:                      typeof r.time === 'number' ? r.time : 0,
-      }))
-    : null;
+  // Keep ALL reviews (post-length-filter) on the lead's `reviews_full` so
+  // qualify can read the newest review's `time` for recency checks.
+  // Persisted `reviews` stays trimmed to top-3 (existing site-gen contract).
+  const reviewsMapped = reviewsFiltered.map((r) => ({
+    author_name:               r.author_name ?? '',
+    rating:                    typeof r.rating === 'number' ? r.rating : 0,
+    text:                      r.text ?? '',
+    relative_time_description: r.relative_time_description ?? '',
+    time:                      typeof r.time === 'number' ? r.time : 0,
+  }));
+  const reviews = reviewsMapped.length > 0 ? reviewsMapped.slice(0, 3) : null;
 
   const photos_urls = Array.isArray(result.photos) && result.photos.length > 0
     ? result.photos
@@ -87,11 +94,13 @@ async function fetchDetails(placeId, apiKey) {
     : null;
 
   return {
-    website: result.website ?? null,
-    phone:   result.formatted_phone_number ?? '',
+    website:        result.website ?? null,
+    phone:          result.formatted_phone_number ?? '',
     hours,
     reviews,
+    reviews_full:   reviewsMapped,
     photos_urls,
+    business_status: result.business_status ?? null,
   };
 }
 
@@ -148,6 +157,24 @@ export async function collect({ niche, city, limit, searchCity }) {
   }, 5);
   process.stdout.write('\n');
 
+  // ── Drop closed businesses up front ─────────────────────────────────────
+  // CLOSED_PERMANENTLY: never converts. CLOSED_TEMPORARILY: also drop —
+  // we can't tell from the API when they reopen, so the place_id sits in
+  // our DB blocking re-prospect later via dedup. Easier to skip now and
+  // let Google's next text search return them once they're back.
+  let droppedClosed = 0;
+  const operational = [];
+  for (const p of withDetails) {
+    if (p.business_status && p.business_status !== 'OPERATIONAL') {
+      droppedClosed++;
+      continue;
+    }
+    operational.push(p);
+  }
+  if (droppedClosed > 0) {
+    console.log(`    🚫  Dropped ${droppedClosed} non-OPERATIONAL business(es).`);
+  }
+
   // ── Separate leads with usable websites from those without ───────────────
   const collected_at = new Date().toISOString();
 
@@ -164,6 +191,11 @@ export async function collect({ niche, city, limit, searchCity }) {
     review_count:  p.review_count,
     hours:         p.hours ?? null,
     reviews:       p.reviews ?? null,
+    // _reviews_full and _business_status are NOT persisted — they're carried
+    // through the in-memory pipeline so qualify can read them. lib/supabase.js
+    // LEAD_COLUMNS whitelist drops them on upsert.
+    _reviews_full:  p.reviews_full ?? [],
+    _business_status: p.business_status ?? null,
     photos_urls:   p.photos_urls ?? null,
     no_website:    !hasWebsite,
     status:        'prospected',
@@ -174,7 +206,7 @@ export async function collect({ niche, city, limit, searchCity }) {
   const leads = [];
   const noWebsiteLeads = [];
 
-  for (const p of withDetails) {
+  for (const p of operational) {
     if (isUsableWebsite(p.website)) {
       leads.push(buildLead(p, true));
     } else {
