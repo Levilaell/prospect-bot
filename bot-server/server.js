@@ -201,6 +201,18 @@ const server = createServer(async (req, res) => {
         if (body.qualificationFilters && typeof body.qualificationFilters === 'object') {
           configData.qualificationFilters = body.qualificationFilters
         }
+        // Experiment tracking — admin sends campaign_code + bot_run_id.
+        // Bot stamps both onto every lead it upserts (see lib/supabase.js
+        // setExperimentContext + prepareRow). campaign_code falls back to
+        // body.market for backward compat with admin builds that haven't
+        // yet been deployed.
+        const campaignCode = body.campaign_code ?? body.market
+        if (typeof campaignCode === 'string' && campaignCode.length > 0) {
+          configData.campaign_code = campaignCode
+        }
+        if (typeof body.bot_run_id === 'string' && body.bot_run_id.length > 0) {
+          configData.bot_run_id = body.bot_run_id
+        }
         writeFileSync(configTmpPath, JSON.stringify(configData))
         args.push('--config', configTmpPath)
       } catch (err) {

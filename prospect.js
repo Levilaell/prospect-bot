@@ -6,6 +6,7 @@ import { readFileSync } from 'node:fs';
 import { setInstances }   from './lib/whatsapp.js';
 import { runAuto }        from './steps/auto.js';
 import { validateCrmEnv } from './lib/crm-client.js';
+import { setExperimentContext } from './lib/supabase.js';
 
 // ── Arg parsing ───────────────────────────────────────────────────────────────
 
@@ -67,9 +68,23 @@ if (raw.auto) {
       if (externalConfig.evolutionInstances && externalConfig.evolutionApiUrl) {
         setInstances(externalConfig.evolutionInstances, externalConfig.evolutionApiUrl);
       }
+      // Experiment tracking — admin propagates campaign_code + bot_run_id
+      // through the temp config file. setExperimentContext makes the values
+      // available to every upsertLeads call without threading a parameter
+      // through processItem (mirrors setInstances above).
+      // campaign_code falls back to the CLI --market when older admin
+      // versions hit a newer bot.
+      const ctxCampaign = externalConfig.campaign_code ?? market;
+      const ctxBotRun   = externalConfig.bot_run_id ?? null;
+      setExperimentContext({ campaign_code: ctxCampaign, bot_run_id: ctxBotRun });
+      console.log(`🏷️   Experiment tracking: campaign_code=${ctxCampaign ?? 'null'}, bot_run_id=${ctxBotRun ?? 'null'}`);
     } catch (err) {
       console.warn(`⚠️  Failed to load config file: ${err.message} — using built-in config`);
     }
+  } else {
+    // CLI run without --config (manual / curl). Stamp campaign_code from
+    // --market only; bot_run_id stays null since no run record exists.
+    setExperimentContext({ campaign_code: market !== 'all' ? market : null, bot_run_id: null });
   }
 
   const maxSend = raw['max-send'] ? parseInt(raw['max-send'], 10) : undefined;
