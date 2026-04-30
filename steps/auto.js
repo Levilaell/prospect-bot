@@ -11,9 +11,21 @@ import { generateMessages } from './message.js';
 import { upsertLeads, getClient } from '../lib/supabase.js';
 import { enrichLeads }      from '../lib/enricher.js';
 import { sendWhatsApp, checkWhatsappNumbers, normalizePhone } from '../lib/whatsapp.js';
-import { sendSms }          from '../lib/sms.js';
-import { getAlreadySentPlaceIds, sendToInstantly } from '../lib/instantly.js';
-import { notifyCrmProjectCreate } from '../lib/crm-client.js';
+
+/**
+ * Returns the set of place_ids that already have outreach_sent_at set.
+ * Used to dedupe sends within a run (replaces the old instantly.js export).
+ */
+async function getAlreadySentPlaceIds(placeIds) {
+  if (!placeIds || placeIds.length === 0) return new Set();
+  const client = getClient();
+  const { data } = await client
+    .from('leads')
+    .select('place_id')
+    .in('place_id', placeIds)
+    .not('outreach_sent_at', 'is', null);
+  return new Set((data ?? []).map((r) => r.place_id));
+}
 
 /**
  * Runs a single queue item through the full pipeline.
@@ -39,16 +51,6 @@ async function processItem(item, {
   // Fall back to lang-based defaults for direct CLI / legacy callers: BR→WA, US→email.
   const channel = item.channel ?? (lang === 'pt' ? 'whatsapp' : 'email');
   const tag = `[${niche} | ${searchCity}]`;
-
-  // SMS provider (Twilio) isn't wired yet — every send would fail with
-  // sms_not_configured AND the end-of-run cleanup would then delete the
-  // prospected leads, so next run re-scrapes them (burns Google Places +
-  // Claude budget on every pass). Block --send until SMS is live.
-  if (channel === 'sms' && send) {
-    console.warn(`\n⚠️   ${tag} SMS provider not configured — refusing --send to avoid burning collect/analyze budget on failed sends.`);
-    console.warn(`    Re-run with --dry to scrape + score leads, or wire up lib/sms.js first.`);
-    return { collected: 0, qualified: 0, sent: 0 };
-  }
 
   // 1. Collect
   console.log(`\n🔍  ${tag} Collecting up to ${limit} leads...`);
@@ -464,51 +466,18 @@ async function processItem(item, {
   let sentCount = 0;
   let maxSendReached = false;
   if (send) {
-    // Email campaigns enrich email from the site before dispatching.
-    if (channel === 'email') withMessages = await enrichLeads(withMessages);
-
     const remaining = maxSend ? maxSend - totalSentSoFar : undefined;
 
-    if (channel === 'whatsapp') {
-      const forWA = withMessages.filter((l) => l.phone);
-      if (forWA.length > 0) {
-        try {
-          const alreadySent = await getAlreadySentPlaceIds(forWA.map((l) => l.place_id));
-          const toSend = forWA.filter((l) => !alreadySent.has(l.place_id));
-          const result = await sendWhatsApp(toSend, { maxSend: remaining, country });
-          sentCount += result.sent;
-          maxSendReached = !!result.maxSendReached;
-        } catch (err) {
-          console.warn(`⚠️  ${tag} WhatsApp send failed: ${err.message}`);
-        }
-      }
-    } else if (channel === 'sms') {
-      const forSms = withMessages.filter((l) => l.phone);
-      if (forSms.length > 0) {
-        try {
-          const alreadySent = await getAlreadySentPlaceIds(forSms.map((l) => l.place_id));
-          const toSend = forSms.filter((l) => !alreadySent.has(l.place_id));
-          const result = await sendSms(toSend, { maxSend: remaining });
-          sentCount += result.sent;
-          maxSendReached = !!result.maxSendReached;
-        } catch (err) {
-          console.warn(`⚠️  ${tag} SMS send failed: ${err.message}`);
-        }
-      }
-    } else if (channel === 'email') {
-      const forEmail = withMessages.filter((l) => l.email);
-      if (forEmail.length > 0) {
-        try {
-          const alreadySent = await getAlreadySentPlaceIds(forEmail.map((l) => l.place_id));
-          const toSend = forEmail.filter((l) => !alreadySent.has(l.place_id));
-          if (toSend.length > 0) {
-            const result = await sendToInstantly(toSend, { maxSend: remaining });
-            sentCount += result.sent;
-            maxSendReached = !!result.maxSendReached;
-          }
-        } catch (err) {
-          console.warn(`⚠️  ${tag} Instantly send failed: ${err.message}`);
-        }
+    const forWA = withMessages.filter((l) => l.phone);
+    if (forWA.length > 0) {
+      try {
+        const alreadySent = await getAlreadySentPlaceIds(forWA.map((l) => l.place_id));
+        const toSend = forWA.filter((l) => !alreadySent.has(l.place_id));
+        const result = await sendWhatsApp(toSend, { maxSend: remaining, country });
+        sentCount += result.sent;
+        maxSendReached = !!result.maxSendReached;
+      } catch (err) {
+        console.warn(`⚠️  ${tag} WhatsApp send failed: ${err.message}`);
       }
     }
   }

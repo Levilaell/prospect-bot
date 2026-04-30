@@ -29,7 +29,7 @@ try {
   }));
 } catch (err) {
   console.error(`❌  Invalid arguments: ${err.message}`);
-  console.error('    Usage: node prospect.js --auto [--market BR|US-EM|US-WA|US-SMS|all] [--limit N] [--min-score N] [--dry] [--send] [--max-send N] [--max-projects N] [--config <path>]');
+  console.error('    Usage: node prospect.js --auto [--market BR|all] [--limit N] [--min-score N] [--dry] [--send] [--max-send N] [--max-projects N] [--config <path>]');
   process.exit(1);
 }
 
@@ -49,15 +49,8 @@ if (raw.auto) {
 
   const autoLimit    = parseInt(raw.limit, 10) || 20;
   const autoMinScore = parseInt(raw['min-score'], 10) || 3;
-  // Campaign code — admin /bot UI sends these identifiers. 'US' kept as an
-  // alias of 'US-EM' for CLI convenience, but prefer the explicit forms.
   const marketInput = raw.market?.toUpperCase();
-  const market      = marketInput === 'BR'     ? 'BR'
-                    : marketInput === 'US'     ? 'US-EM'
-                    : marketInput === 'US-EM'  ? 'US-EM'
-                    : marketInput === 'US-WA'  ? 'US-WA'
-                    : marketInput === 'US-SMS' ? 'US-SMS'
-                    : 'all';
+  const market      = marketInput === 'BR' ? 'BR' : 'all';
 
   // Load external config from dashboard if provided via --config <path>
   let externalConfig;
@@ -90,9 +83,8 @@ if (raw.auto) {
   const maxSend = raw['max-send'] ? parseInt(raw['max-send'], 10) : undefined;
   const maxProjects = raw['max-projects'] ? parseInt(raw['max-projects'], 10) : undefined;
 
-  // CRM client is required whenever we might actually send or create
-  // projects, so fail fast on missing shared-secret / base URL.
-  if (raw.send || (market && market.startsWith('US-'))) {
+  // CRM client is required for sends so fail fast on missing shared-secret / base URL.
+  if (raw.send) {
     try { validateCrmEnv(); } catch (err) { fatal(err.message); }
   }
 
