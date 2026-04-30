@@ -61,16 +61,26 @@ if (raw.auto) {
       if (externalConfig.evolutionInstances && externalConfig.evolutionApiUrl) {
         setInstances(externalConfig.evolutionInstances, externalConfig.evolutionApiUrl);
       }
-      // Experiment tracking — admin propagates campaign_code + bot_run_id
-      // through the temp config file. setExperimentContext makes the values
-      // available to every upsertLeads call without threading a parameter
-      // through processItem (mirrors setInstances above).
-      // campaign_code falls back to the CLI --market when older admin
-      // versions hit a newer bot.
+      // Experiment tracking — admin propagates campaign_code + bot_run_id +
+      // experiment_id + experiment_variant_id through the temp config file.
+      // setExperimentContext makes the values available to every upsertLeads
+      // call without threading a parameter through processItem (mirrors
+      // setInstances above).
       const ctxCampaign = externalConfig.campaign_code ?? market;
       const ctxBotRun   = externalConfig.bot_run_id ?? null;
-      setExperimentContext({ campaign_code: ctxCampaign, bot_run_id: ctxBotRun });
-      console.log(`🏷️   Experiment tracking: campaign_code=${ctxCampaign ?? 'null'}, bot_run_id=${ctxBotRun ?? 'null'}`);
+      const ctxExpId    = externalConfig.experiment_id ?? null;
+      const ctxExpVarId = externalConfig.experiment_variant_id ?? null;
+      setExperimentContext({
+        campaign_code: ctxCampaign,
+        bot_run_id: ctxBotRun,
+        experiment_id: ctxExpId,
+        experiment_variant_id: ctxExpVarId,
+      });
+      console.log(
+        `🏷️   Experiment tracking: campaign_code=${ctxCampaign ?? 'null'}, ` +
+        `bot_run_id=${ctxBotRun ?? 'null'}, experiment_id=${ctxExpId ?? 'null'}, ` +
+        `variant_id=${ctxExpVarId ?? 'null'}`,
+      );
     } catch (err) {
       console.warn(`⚠️  Failed to load config file: ${err.message} — using built-in config`);
     }
