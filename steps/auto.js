@@ -11,6 +11,7 @@ import { generateMessages } from './message.js';
 import { upsertLeads, getClient } from '../lib/supabase.js';
 import { enrichLeads }      from '../lib/enricher.js';
 import { sendWhatsApp, checkWhatsappNumbers, normalizePhone } from '../lib/whatsapp.js';
+import { getMessageTemplate, interpolateMessageTemplate } from '../lib/auto-config.js';
 
 /**
  * Returns the set of place_ids that already have outreach_sent_at set.
@@ -450,13 +451,25 @@ async function processItem(item, {
     };
   }
 
-  // 4. Generate messages (handles both with-website and no-website via no_website flag)
-  console.log(`✉️  ${tag} Generating ${lang.toUpperCase()} ${channel} messages for ${allQualified.length} leads (${noWebsiteLeads.length} no-website)...`);
+  // 4. Generate messages.
+  // Lab variants pass a `message_template` via externalConfig — we
+  // interpolate it per-lead instead of calling Claude. Saves ~$0.003/lead
+  // and keeps the message exactly as Levi authored it in the variant form.
   let withMessages = allQualified;
-  try {
-    withMessages = await generateMessages(allQualified, { lang, channel });
-  } catch (err) {
-    console.warn(`⚠️  ${tag} message generation failed: ${err.message}`);
+  const variantTemplate = getMessageTemplate();
+  if (variantTemplate) {
+    console.log(`✉️  ${tag} Using variant template for ${allQualified.length} leads (no Claude call)...`);
+    withMessages = allQualified.map((lead) => ({
+      ...lead,
+      message: interpolateMessageTemplate(variantTemplate, lead),
+    }));
+  } else {
+    console.log(`✉️  ${tag} Generating ${lang.toUpperCase()} ${channel} messages for ${allQualified.length} leads (${noWebsiteLeads.length} no-website)...`);
+    try {
+      withMessages = await generateMessages(allQualified, { lang, channel });
+    } catch (err) {
+      console.warn(`⚠️  ${tag} message generation failed: ${err.message}`);
+    }
   }
 
   // 5. Export to Supabase (full data)

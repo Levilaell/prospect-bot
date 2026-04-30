@@ -7,6 +7,7 @@ import { setInstances }   from './lib/whatsapp.js';
 import { runAuto }        from './steps/auto.js';
 import { validateCrmEnv } from './lib/crm-client.js';
 import { setExperimentContext } from './lib/supabase.js';
+import { setMessageTemplate } from './lib/auto-config.js';
 
 // ── Arg parsing ───────────────────────────────────────────────────────────────
 
@@ -81,6 +82,10 @@ if (raw.auto) {
         `bot_run_id=${ctxBotRun ?? 'null'}, experiment_id=${ctxExpId ?? 'null'}, ` +
         `variant_id=${ctxExpVarId ?? 'null'}`,
       );
+      if (externalConfig.message_template) {
+        setMessageTemplate(externalConfig.message_template);
+        console.log(`📝   Message template loaded (${externalConfig.message_template.length} chars) — Claude generateMessages será pulado.`);
+      }
     } catch (err) {
       console.warn(`⚠️  Failed to load config file: ${err.message} — using built-in config`);
     }
