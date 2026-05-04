@@ -44,6 +44,12 @@ async function processItem(item, {
   // True when the campaign is preview-first (US-WA, BR-WA-PREVIEW, …):
   // bot creates Projects via CRM instead of dispatching outreach.
   previewFirst = false,
+  // True when this run targets ONLY no-website leads. Drops with-website
+  // leads after collect+dedup+phone-filter, before analyze. Pipeline
+  // continues normally (send, etc) for the no-website remainder. Cheaper
+  // than previewFirst because no Project creation, no Claude code, no
+  // Getimg — just filter and send.
+  noWebsiteOnly = false,
   // Optional pre-message gates. See steps/qualify.js for shape + semantics.
   qualificationFilters,
 }) {
@@ -220,16 +226,16 @@ async function processItem(item, {
     }
   }
 
-  // ── Preview-first: only no-website leads qualify ───────────────────────
-  // Preview-first campaigns (US-WA, BR-WA-PREVIEW) are tuned for businesses
-  // without a site: Claude Code builds one from scratch and the outreach
-  // opens with "I built you a version", which lands harder than "I built a
-  // better version of your current site". Skip analyze/visual/score on
+  // ── No-website-only filter (preview-first OR explicit noWebsiteOnly) ────
+  // Both modes target only businesses without a site — preview-first builds
+  // one from scratch via Claude Code, noWebsiteOnly just sends the cold
+  // template to no-website leads (cheaper). Skip analyze/visual/score on
   // with-website leads entirely — saves PageSpeed, Claude, and Getimg
   // spend per run.
-  if (previewFirst && leads.length > 0) {
+  if ((previewFirst || noWebsiteOnly) && leads.length > 0) {
+    const reason = previewFirst ? 'preview-first' : 'no-website-only';
     console.log(
-      `    ${tag} preview-first targets only no-website leads — skipping ${leads.length} with-website.`,
+      `    ${tag} ${reason} targets only no-website leads — skipping ${leads.length} with-website.`,
     );
     const minimal = leads.map(l => ({
       place_id: l.place_id,
@@ -519,11 +525,12 @@ export async function runAuto({ minScore = 3, dry = false, send = false, limit =
   // Both apply to every queue item in this run, so we hoist them once instead of
   // threading through generateQueue.
   const previewFirst = externalConfig?.previewFirst === true;
+  const noWebsiteOnly = externalConfig?.noWebsiteOnly === true;
   const qualificationFilters = externalConfig?.qualificationFilters;
 
   console.log(`\n🤖  AUTONOMOUS MODE — ${marketLabel}`);
   console.log('━'.repeat(50));
-  console.log(`    market: ${marketLabel}  |  min-score: ${minScore}  |  limit/item: ${limit}  |  dry: ${dry}  |  send: ${send}${maxSend ? `  |  max-send: ${maxSend}` : ''}${maxProjects ? `  |  max-projects: ${maxProjects}` : ''}${previewFirst ? '  |  preview-first' : ''}`);
+  console.log(`    market: ${marketLabel}  |  min-score: ${minScore}  |  limit/item: ${limit}  |  dry: ${dry}  |  send: ${send}${maxSend ? `  |  max-send: ${maxSend}` : ''}${maxProjects ? `  |  max-projects: ${maxProjects}` : ''}${previewFirst ? '  |  preview-first' : ''}${noWebsiteOnly ? '  |  no-website-only' : ''}`);
   if (qualificationFilters) {
     const parts = [];
     if (qualificationFilters.minRating != null) parts.push(`rating≥${qualificationFilters.minRating}`);
@@ -582,6 +589,7 @@ export async function runAuto({ minScore = 3, dry = false, send = false, limit =
       totalSentSoFar: totalSent,
       totalProjectsSoFar: totalProjects,
       previewFirst,
+      noWebsiteOnly,
       qualificationFilters,
     });
     totalCollected += result.collected;
