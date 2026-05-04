@@ -204,6 +204,9 @@ const server = createServer(async (req, res) => {
         if (body.qualificationFilters && typeof body.qualificationFilters === 'object') {
           configData.qualificationFilters = body.qualificationFilters
         }
+        if (typeof body.message_template === 'string' && body.message_template.trim()) {
+          configData.message_template = body.message_template
+        }
         // Experiment tracking — admin sends campaign_code + bot_run_id.
         // Bot stamps both onto every lead it upserts (see lib/supabase.js
         // setExperimentContext + prepareRow). campaign_code falls back to
