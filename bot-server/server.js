@@ -198,6 +198,9 @@ const server = createServer(async (req, res) => {
         if (body.previewFirst === true) {
           configData.previewFirst = true
         }
+        if (body.noWebsiteOnly === true) {
+          configData.noWebsiteOnly = true
+        }
         if (body.qualificationFilters && typeof body.qualificationFilters === 'object') {
           configData.qualificationFilters = body.qualificationFilters
         }
